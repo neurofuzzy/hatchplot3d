@@ -2,7 +2,7 @@
 // TODO: Fix THREE.js types
 'use client';
 
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { useScene } from '@/context/SceneContext';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -27,15 +27,21 @@ import * as THREE from 'three';
 const ControlsPanel: React.FC = () => {
   const { lights, updateLight, addLight, removeLight, hatchLines, camera, objects, setDirty } = useScene();
   const { toast } = useToast();
+  const [isClient, setIsClient] = useState(false);
+
+  useEffect(() => {
+    setIsClient(true);
+  }, []);
+
 
   const handleAddLight = () => {
     const newLight: Omit<SceneLight, 'id' | 'castShadow'> = {
       type: 'directional',
-      position: { x: Math.random() * 10 - 5, y: 5, z: Math.random() * 10 - 5 },
+      position: { x: Math.random() * 6 - 3, y: 4, z: Math.random() * 6 - 3 }, // Keep Y positive for "overhead"
       target: { x: 0, y: 0, z: 0 },
       color: '#FFFFFF',
-      intensity: 0.75,
-      hatchAngle: Math.random() * 360,
+      intensity: 0.8,
+      hatchAngle: Math.floor(Math.random() * 8) * 45, // Snap to 45 deg increments
     };
     addLight(newLight);
     toast({ title: "Light Added", description: "A new directional light has been added to the scene." });
@@ -71,21 +77,32 @@ const ControlsPanel: React.FC = () => {
         return;
     }
     
-    const sceneElement = document.querySelector<HTMLDivElement>('.w-full.h-full.absolute.top-0.left-0');
+    // Attempt to get scene dimensions from the SceneViewer's mount point
+    // This is a bit of a hack; ideally, dimensions would be passed down or available via context/ref
+    const sceneElement = document.querySelector<HTMLDivElement>('div[class*="w-full"][class*="h-full"][class*="absolute"]');
     if (!sceneElement) {
-        toast({ title: "Export Error", description: "Scene element not found for dimensions.", variant: "destructive" });
+        toast({ title: "Export Error", description: "Scene element not found for dimensions. Using default 800x600.", variant: "destructive" });
+        // Fallback dimensions if element not found
+        const svgData = exportToSVG(hatchLines, camera, 800, 600); // Default/fallback size
+        downloadSVG(svgData);
         return;
     }
     const sceneWidth = sceneElement.clientWidth;
     const sceneHeight = sceneElement.clientHeight;
     
     // Create a temporary camera for SVG export based on current camera state
+    // This ensures that the SVG export reflects what the user currently sees.
     const tempCamera = new THREE.PerspectiveCamera(camera.fov, sceneWidth / sceneHeight, camera.near, camera.far);
     tempCamera.position.set(camera.position.x, camera.position.y, camera.position.z);
     tempCamera.lookAt(new THREE.Vector3(camera.lookAt.x, camera.lookAt.y, camera.lookAt.z));
-    tempCamera.updateProjectionMatrix(); // Ensure projection matrix is up-to-date
+    tempCamera.updateProjectionMatrix(); 
     
     const svgData = exportToSVG(hatchLines, tempCamera, sceneWidth, sceneHeight);
+    downloadSVG(svgData);
+    toast({ title: "SVG Exported", description: "Your scene has been exported as an SVG file." });
+  };
+
+  const downloadSVG = (svgData: string) => {
     const blob = new Blob([svgData], { type: 'image/svg+xml' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -95,8 +112,13 @@ const ControlsPanel: React.FC = () => {
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
-    toast({ title: "SVG Exported", description: "Your scene has been exported as an SVG file." });
-  };
+  }
+
+  if (!isClient) {
+    // Render placeholder or null during SSR to avoid hydration errors with dynamic IDs
+    return <div className="p-4"><p>Loading controls...</p></div>;
+  }
+
 
   return (
     <ScrollArea className="h-full w-full p-4 bg-card text-card-foreground">
@@ -110,9 +132,9 @@ const ControlsPanel: React.FC = () => {
             <Button onClick={handleAddLight} className="w-full">
               <PlusCircle className="mr-2 h-4 w-4" /> Add Directional Light
             </Button>
-            <Accordion type="single" collapsible className="w-full" defaultValue={lights.length > 0 ? `light-0` : undefined}>
+            <Accordion type="single" collapsible className="w-full" defaultValue={lights.length > 0 ? `light-${lights[0].id}` : undefined}>
               {lights.map((light, index) => (
-                <AccordionItem value={`light-${index}`} key={light.id}>
+                <AccordionItem value={`light-${light.id}`} key={light.id}>
                   <AccordionTrigger>
                     <div className="flex items-center justify-between w-full">
                        <span className="flex items-center gap-2">
@@ -126,7 +148,7 @@ const ControlsPanel: React.FC = () => {
                       <Label htmlFor={`intensity-${light.id}`}>Intensity (Density)</Label>
                       <Slider
                         id={`intensity-${light.id}`}
-                        min={0.05} max={2} step={0.05} // Min intensity 0.05 for at least 1 line
+                        min={0.1} max={2} step={0.05} // Min intensity 0.1 for visible lines
                         value={[light.intensity]}
                         onValueChange={(value) => handleLightChange(light.id, 'intensity', value[0])}
                       />

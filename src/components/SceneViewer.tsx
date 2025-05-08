@@ -20,28 +20,35 @@ const SceneViewer: React.FC = () => {
   const controlsRef = useRef<OrbitControls | null>(null);
   const hatchLinesGroupRef: MutableRefObject<THREE.Group | null> = useRef<THREE.Group | null>(null);
   const lightHelpersRef = useRef<Map<string, THREE.DirectionalLightHelper | THREE.SpotLightHelper | THREE.PointLightHelper>>(new Map());
+  const objectMeshesRef = useRef<THREE.Mesh[]>([]); // Keep track of added object meshes
   const gridHelperRef = useRef<THREE.GridHelper | null>(null);
   const axesHelperRef = useRef<THREE.AxesHelper | null>(null);
+  const animationFrameIdRef = useRef<number | null>(null);
 
 
   const updateHatchVisuals = useCallback((paths: HatchPath[]) => {
     if (!sceneRef.current || !hatchLinesGroupRef.current) return;
 
+    // Dispose old lines
     hatchLinesGroupRef.current.children.forEach(child => {
         if (child instanceof THREE.Line) {
             child.geometry.dispose();
-            (child.material as THREE.Material).dispose();
+            if (child.material instanceof THREE.Material) {
+                 (child.material as THREE.Material).dispose();
+            } else if (Array.isArray(child.material)) {
+                child.material.forEach(m => m.dispose());
+            }
         }
     });
-    hatchLinesGroupRef.current.clear();
+    hatchLinesGroupRef.current.clear(); // Remove all children
 
-    let linePreviewColorHex = 0xffffff; // Default white (for dark themes)
+    let linePreviewColorHex = 0xffffff; 
     if (typeof window !== 'undefined') {
         const fgCssValue = getComputedStyle(document.documentElement).getPropertyValue('--foreground').trim();
         try {
             const parts = fgCssValue.split(' ');
             let colorString = fgCssValue;
-            if (parts.length === 3 && parts[1].includes('%') && parts[2].includes('%')) {
+            if (parts.length === 3 && parts[1].endsWith('%') && parts[2].endsWith('%')) {
                 colorString = `hsl(${parts[0]}, ${parts[1]}, ${parts[2]})`;
             }
             linePreviewColorHex = new THREE.Color(colorString).getHex();
@@ -49,7 +56,7 @@ const SceneViewer: React.FC = () => {
             console.warn('Failed to parse --foreground for hatch lines, defaulting to white.', e);
         }
     }
-    const material = new THREE.LineBasicMaterial({ color: linePreviewColorHex });
+    const material = new THREE.LineBasicMaterial({ color: linePreviewColorHex, linewidth: 0.5 }); // Thinner lines
 
     paths.forEach(path => {
       if (path.length > 0) {
@@ -72,50 +79,52 @@ const SceneViewer: React.FC = () => {
 
 
   useEffect(() => {
-    if (!mountRef.current || typeof window === 'undefined') return;
+    if (!mountRef.current || typeof window === 'undefined' || rendererRef.current) return; // Prevent re-initialization
+
+    console.log('SceneViewer initializing Three.js');
+    const currentMount = mountRef.current;
 
     const renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setPixelRatio(window.devicePixelRatio);
-    renderer.setSize(mountRef.current.clientWidth, mountRef.current.clientHeight);
-    mountRef.current.appendChild(renderer.domElement);
+    renderer.setSize(currentMount.clientWidth, currentMount.clientHeight);
+    currentMount.appendChild(renderer.domElement);
     rendererRef.current = renderer;
 
     const scene = new THREE.Scene();
     
     const bgCssValue = getComputedStyle(document.documentElement).getPropertyValue('--background').trim();
-    let bgColorString = '#333333'; // Default fallback dark gray
-    if (bgCssValue) {
-      const parts = bgCssValue.split(' ');
-      if (parts.length === 3 && parts[1].includes('%') && parts[2].includes('%')) {
-        bgColorString = `hsl(${parts[0]}, ${parts[1]}, ${parts[2]})`;
-      } else {
-        bgColorString = bgCssValue; // Use as is if not H S L% format (e.g. hex)
-      }
-    }
+    let bgColorString = 'hsl(var(--background))';
     try {
+        const parts = bgCssValue.split(' ');
+        if (parts.length === 3 && parts[1].endsWith('%') && parts[2].endsWith('%')) {
+             bgColorString = `hsl(${parts[0]}, ${parts[1]}, ${parts[2]})`;
+        } else {
+            bgColorString = bgCssValue; // Use as is if not H S L% format
+        }
         scene.background = new THREE.Color(bgColorString);
     } catch (e) {
-        console.warn("Failed to parse --background for scene, defaulting to #333333", e);
-        scene.background = new THREE.Color('#333333');
+        console.warn("Failed to parse --background for scene, defaulting to dark gray", e);
+        scene.background = new THREE.Color(0x282c34); // A common dark editor background
     }
     sceneRef.current = scene;
     
     hatchLinesGroupRef.current = new THREE.Group(); 
     scene.add(hatchLinesGroupRef.current);
 
-    // Add Grid and Axes helpers
-    const gridHelper = new THREE.GridHelper(10, 10, 0x888888, 0x444444); // Grid size 10, 10 divisions, custom colors
+    const gridHelperColorCenter = new THREE.Color(`hsl(${getComputedStyle(document.documentElement).getPropertyValue('--muted-foreground').trim()})`);
+    const gridHelperColorGrid = new THREE.Color(`hsl(${getComputedStyle(document.documentElement).getPropertyValue('--border').trim()})`);
+    const gridHelper = new THREE.GridHelper(10, 10, gridHelperColorCenter, gridHelperColorGrid); 
     scene.add(gridHelper);
     gridHelperRef.current = gridHelper;
 
-    const axesHelper = new THREE.AxesHelper(2); // Axis lines of length 2
+    const axesHelper = new THREE.AxesHelper(2); 
     scene.add(axesHelper);
     axesHelperRef.current = axesHelper;
 
 
     const camera = new THREE.PerspectiveCamera(
       cameraState.fov,
-      mountRef.current.clientWidth / mountRef.current.clientHeight,
+      currentMount.clientWidth / currentMount.clientHeight,
       cameraState.near,
       cameraState.far
     );
@@ -128,17 +137,18 @@ const SceneViewer: React.FC = () => {
     controls.enableDamping = true;
     controls.dampingFactor = 0.1;
     controls.screenSpacePanning = false;
-    controls.minDistance = 1;
-    controls.maxDistance = 500;
-    controls.addEventListener('change', () => {
+    controls.minDistance = 0.5; // Allow closer zoom
+    controls.maxDistance = 100; // Reduce max distance
+    const onControlsChange = () => {
         if (cameraRef.current && controlsRef.current) {
             updateCamera({
                 position: { x: cameraRef.current.position.x, y: cameraRef.current.position.y, z: cameraRef.current.position.z },
                 lookAt: { x: controlsRef.current.target.x, y: controlsRef.current.target.y, z: controlsRef.current.target.z }
             });
-            setDirty(true); 
+            // setDirty(true); // Removed, as dirty is set by cameraState change now
         }
-    });
+    };
+    controls.addEventListener('change', onControlsChange);
     controlsRef.current = controls;
 
     const handleResize = () => {
@@ -148,13 +158,13 @@ const SceneViewer: React.FC = () => {
         rendererRef.current.setSize(width, height);
         cameraRef.current.aspect = width / height;
         cameraRef.current.updateProjectionMatrix();
-        setDirty(true);
+        setDirty(true); 
       }
     };
     window.addEventListener('resize', handleResize);
 
     const animate = () => {
-      requestAnimationFrame(animate);
+      animationFrameIdRef.current = requestAnimationFrame(animate);
       controlsRef.current?.update();
       lightHelpersRef.current.forEach(helper => helper.update());
       rendererRef.current?.render(sceneRef.current!, cameraRef.current!);
@@ -162,117 +172,206 @@ const SceneViewer: React.FC = () => {
     animate();
 
     return () => {
-      window.removeEventListener('resize', handleResize);
-      controlsRef.current?.dispose();
-      if (mountRef.current && rendererRef.current) {
-         mountRef.current.removeChild(rendererRef.current.domElement);
+      console.log('SceneViewer unmounting');
+      if (animationFrameIdRef.current) {
+        cancelAnimationFrame(animationFrameIdRef.current);
       }
-      rendererRef.current?.dispose();
+      window.removeEventListener('resize', handleResize);
+      controls.removeEventListener('change', onControlsChange);
+
 
       if (gridHelperRef.current && sceneRef.current) {
         sceneRef.current.remove(gridHelperRef.current);
-        gridHelperRef.current.dispose();
+        gridHelperRef.current.geometry.dispose();
+        (gridHelperRef.current.material as THREE.Material).dispose();
+        gridHelperRef.current = null;
       }
       if (axesHelperRef.current && sceneRef.current) {
         sceneRef.current.remove(axesHelperRef.current);
-        axesHelperRef.current.dispose();
+        axesHelperRef.current.geometry.dispose();
+        (axesHelperRef.current.material as THREE.Material).dispose();
+        axesHelperRef.current = null;
       }
-
-      sceneRef.current?.traverse((object) => {
-        if (object instanceof THREE.Mesh) {
-          object.geometry.dispose();
-          if (Array.isArray(object.material)) {
-            object.material.forEach(material => material.dispose());
-          } else {
-            object.material.dispose();
-          }
-        }
-      });
-      hatchLinesGroupRef.current?.traverse((object) => { 
+      
+      // Dispose hatch lines
+      hatchLinesGroupRef.current?.traverse((object) => {
         if (object instanceof THREE.Line) {
             object.geometry.dispose();
-            (object.material as THREE.Material).dispose();
+             if (object.material instanceof THREE.Material) {
+                 (object.material as THREE.Material).dispose();
+            } else if (Array.isArray(object.material)) {
+                object.material.forEach(m => m.dispose());
+            }
         }
       });
-      lightHelpersRef.current.forEach(helper => {
+       if (hatchLinesGroupRef.current && sceneRef.current) {
+         sceneRef.current.remove(hatchLinesGroupRef.current);
+       }
+       hatchLinesGroupRef.current = null;
+
+
+      // Dispose object meshes
+      objectMeshesRef.current.forEach(mesh => {
+        if (sceneRef.current) sceneRef.current.remove(mesh);
+        mesh.geometry.dispose();
+         if (mesh.material instanceof THREE.Material) {
+             (mesh.material as THREE.Material).dispose();
+        } else if (Array.isArray(mesh.material)) {
+            mesh.material.forEach(m => m.dispose());
+        }
+      });
+      objectMeshesRef.current = [];
+
+      // Dispose lights and their helpers
+      lightHelpersRef.current.forEach((helper, id) => {
+        if (sceneRef.current) {
+            sceneRef.current.remove(helper);
+            const lightSource = sceneRef.current.getObjectByProperty('userData.id', id) as THREE.Light;
+            if (lightSource) {
+                sceneRef.current.remove(lightSource);
+                if (lightSource.target && lightSource.target.parent === sceneRef.current) {
+                    sceneRef.current.remove(lightSource.target);
+                }
+                // THREE.Light itself does not have a dispose method.
+            }
+        }
         helper.dispose();
-        if (helper.parent) helper.parent.remove(helper);
       });
       lightHelpersRef.current.clear();
+
+       // Remove remaining lights (like ambient)
+       if (sceneRef.current) {
+           const lightsToRemove = sceneRef.current.children.filter(child => child.isLight);
+           lightsToRemove.forEach(light => sceneRef.current!.remove(light));
+       }
+
+
+      controlsRef.current?.dispose();
+      controlsRef.current = null;
+
+      if (rendererRef.current && currentMount && currentMount.contains(rendererRef.current.domElement)) {
+         currentMount.removeChild(rendererRef.current.domElement);
+      }
+      rendererRef.current?.dispose();
+      rendererRef.current = null;
+
+      sceneRef.current = null; 
+      cameraRef.current = null;
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); 
+  }, []); // Only run on mount and unmount
 
 
+  // Effect for updating objects and lights in the scene
   useEffect(() => {
     if (!sceneRef.current || !cameraRef.current) return;
+    console.log("Updating objects and lights", objects, lights);
 
-    const objectsAndLightsToKeep = new Set<THREE.Object3D>();
-    objectsAndLightsToKeep.add(cameraRef.current);
-    if (hatchLinesGroupRef.current) objectsAndLightsToKeep.add(hatchLinesGroupRef.current);
-    if (gridHelperRef.current) objectsAndLightsToKeep.add(gridHelperRef.current);
-    if (axesHelperRef.current) objectsAndLightsToKeep.add(axesHelperRef.current);
-    sceneRef.current.children.filter(child => child.userData.isAmbientLight).forEach(al => objectsAndLightsToKeep.add(al));
+    // --- Object Management ---
+    // Remove old object meshes not present in current `objects` state
+    const currentObjectIds = new Set(objects.map(o => o.id));
+    const meshesToRemove = objectMeshesRef.current.filter(mesh => !currentObjectIds.has(mesh.userData.id));
+    meshesToRemove.forEach(mesh => {
+        sceneRef.current!.remove(mesh);
+        mesh.geometry.dispose();
+        if (Array.isArray(mesh.material)) mesh.material.forEach(m => m.dispose());
+        else (mesh.material as THREE.Material).dispose();
+    });
+    objectMeshesRef.current = objectMeshesRef.current.filter(mesh => currentObjectIds.has(mesh.userData.id));
 
-
-    const childrenToRemove = sceneRef.current.children.filter(child => !objectsAndLightsToKeep.has(child));
-    childrenToRemove.forEach(child => {
-      if (child instanceof THREE.Light) {
-         // If it's a light with a target that was added to the scene, remove target too
-        if (child.target && child.target.parent === sceneRef.current) {
-            sceneRef.current!.remove(child.target);
+    // Add new or update existing object meshes
+    const existingMeshIds = new Set(objectMeshesRef.current.map(m => m.userData.id));
+    objects.forEach(objData => {
+        if (!existingMeshIds.has(objData.id)) {
+            const newMesh = createObjectMeshes([objData])[0];
+            sceneRef.current!.add(newMesh);
+            objectMeshesRef.current.push(newMesh);
+        } else {
+            // Update existing mesh (more complex, for now just recreating if params change significantly)
+            // For simplicity here, we assume if an object is in `objects` list, it's either new or its properties are up-to-date for hatching.
+            // A more robust update would diff properties and update THREE.Mesh properties.
         }
-        // If it's a light that had a helper, remove helper
-        const helper = lightHelpersRef.current.get(child.userData.id);
-        if (helper) {
-            if(helper.parent) helper.parent.remove(helper);
-            helper.dispose();
-            lightHelpersRef.current.delete(child.userData.id);
+    });
+
+
+    // --- Light Management ---
+    // Remove old lights and helpers not in current `lights` state
+    const currentLightIds = new Set(lights.map(l => l.id));
+    sceneRef.current.children.slice().forEach(child => {
+        if (child.userData.id && child.isLight && !currentLightIds.has(child.userData.id)) {
+            sceneRef.current!.remove(child);
+            if (child.target && child.target.parent === sceneRef.current) {
+                sceneRef.current!.remove(child.target);
+            }
+            const helper = lightHelpersRef.current.get(child.userData.id);
+            if (helper) {
+                sceneRef.current!.remove(helper);
+                helper.dispose();
+                lightHelpersRef.current.delete(child.userData.id);
+            }
         }
-      }
-      sceneRef.current!.remove(child);
-      // Dispose geometry/material if it's a mesh (though object meshes are handled below)
     });
     
-    // Clear old light helpers specifically (if any were missed or lights were removed from context)
-     lightHelpersRef.current.forEach((helper, id) => {
-        if (!lights.find(l => l.id === id)) { // If light no longer exists in context
-            if(helper.parent) helper.parent.remove(helper);
-            helper.dispose();
-            lightHelpersRef.current.delete(id);
+    // Add new or update existing lights
+    lights.forEach(lightData => {
+        let existingLight = sceneRef.current!.getObjectByProperty('userData.id', lightData.id) as THREE.Light;
+        let existingHelper = lightHelpersRef.current.get(lightData.id);
+
+        if (!existingLight) {
+            const {light: newLight, helper: newHelper} = createLightSources([lightData])[0];
+            sceneRef.current!.add(newLight);
+            if (newLight.target && newLight.target instanceof THREE.Object3D) {
+                sceneRef.current!.add(newLight.target);
+            }
+            if (newHelper) {
+                sceneRef.current!.add(newHelper);
+                lightHelpersRef.current.set(newLight.userData.id, newHelper);
+            }
+        } else {
+            // Update existing light properties
+            existingLight.color.set(lightData.color);
+            // For directional lights
+            if (existingLight instanceof THREE.DirectionalLight) {
+                existingLight.position.set(lightData.position.x, lightData.position.y, lightData.position.z);
+                existingLight.target.position.set(lightData.target.x, lightData.target.y, lightData.target.z);
+            }
+            existingLight.userData.hatchAngle = lightData.hatchAngle;
+            existingLight.userData.originalIntensity = lightData.intensity;
+
+
+            if (existingHelper) {
+                existingHelper.update(); // Update helper if light changes
+                 if(existingHelper.parent !== sceneRef.current) { // If helper got detached somehow
+                    sceneRef.current!.add(existingHelper);
+                }
+            } else { // If helper didn't exist but light did, create and add helper
+                 const {helper: newHelperInstance} = createLightSources([lightData])[0];
+                 if (newHelperInstance) {
+                     sceneRef.current!.add(newHelperInstance);
+                     lightHelpersRef.current.set(lightData.id, newHelperInstance);
+                 }
+            }
         }
     });
-
-
-    const objectMeshes = createObjectMeshes(objects);
-    objectMeshes.forEach(mesh => sceneRef.current!.add(mesh));
-
-    const lightSourceData = createLightSources(lights);
-    lightSourceData.forEach(({light, helper}) => {
-      sceneRef.current!.add(light);
-      if (light.target && light.target instanceof THREE.Object3D) { 
-          sceneRef.current!.add(light.target);
-      }
-      if (helper) {
-        sceneRef.current!.add(helper);
-        lightHelpersRef.current.set(light.userData.id, helper);
-      }
-    });
     
+    // Ensure one ambient light for basic visibility
     if (!sceneRef.current.children.some(l => l instanceof THREE.AmbientLight || l.userData.isAmbientLight)) {
-        const ambientLight = new THREE.AmbientLight(0x606060, 1); 
-        ambientLight.userData.isAmbientLight = true; // Mark it so it's not removed with other lights
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.2); // Dim ambient light
+        ambientLight.userData.isAmbientLight = true; 
         sceneRef.current.add(ambientLight);
     }
     
-    setDirty(true); 
+    setDirty(true); // Trigger hatch line regeneration
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [objects, lights]); 
+  }, [objects, lights]); // Re-run when objects or lights array references change
 
+
+   // Effect for generating and updating hatch lines
    useEffect(() => {
     if (isDirty && cameraRef.current && sceneRef.current) {
+      console.log("Regenerating hatch lines...");
       if (objects.length > 0 && lights.length > 0) {
-        const newHatchLines = generateHatchLines(objects, lights, cameraRef.current);
+        const newHatchLines = generateHatchLines(objectMeshesRef.current, lights, cameraRef.current); // Pass meshes directly
         setHatchLines(newHatchLines);
       } else {
         setHatchLines([]); 
@@ -280,27 +379,28 @@ const SceneViewer: React.FC = () => {
       setDirty(false);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isDirty, objects, lights, cameraState]); 
+  }, [isDirty, objects, lights, cameraState]); // Note: cameraState change will setDirty, triggering this.
 
   useEffect(() => {
     updateHatchVisuals(hatchLines);
   }, [hatchLines, updateHatchVisuals]);
 
 
+  // Effect for updating camera from context state
   useEffect(() => {
     if (cameraRef.current && controlsRef.current) {
       const newPos = new THREE.Vector3(cameraState.position.x, cameraState.position.y, cameraState.position.z);
       const newTarget = new THREE.Vector3(cameraState.lookAt.x, cameraState.lookAt.y, cameraState.lookAt.z);
       let needsProjectionUpdate = false;
-      let needsViewUpdate = false;
+      let needsControlsUpdate = false;
 
       if (!cameraRef.current.position.equals(newPos)) {
         cameraRef.current.position.copy(newPos);
-        needsViewUpdate = true;
+        needsControlsUpdate = true; 
       }
       if (!controlsRef.current.target.equals(newTarget)) {
         controlsRef.current.target.copy(newTarget);
-        needsViewUpdate = true; // OrbitControls.update() will call camera.lookAt(controls.target)
+        needsControlsUpdate = true;
       }
 
       if (cameraRef.current.fov !== cameraState.fov) {
@@ -316,12 +416,15 @@ const SceneViewer: React.FC = () => {
         needsProjectionUpdate = true;
       }
 
-      if (needsViewUpdate && controlsRef.current) {
-        controlsRef.current.update(); // This ensures camera.lookAt is called if target changed
+      if (needsControlsUpdate && controlsRef.current) {
+        controlsRef.current.update(); 
       }
       if (needsProjectionUpdate) {
         cameraRef.current.updateProjectionMatrix();
-        setDirty(true); 
+      }
+      // If any camera parameter changed, we might need to regenerate hatches
+      if (needsControlsUpdate || needsProjectionUpdate) {
+        setDirty(true);
       }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -332,4 +435,3 @@ const SceneViewer: React.FC = () => {
 };
 
 export default SceneViewer;
-
