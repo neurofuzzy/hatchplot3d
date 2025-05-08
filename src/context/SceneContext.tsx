@@ -3,7 +3,7 @@
 import type { ReactNode } from 'react';
 import React, { createContext, useContext, useState, useCallback } from 'react';
 import type { SceneState, SceneLight, SceneObject, CameraState, SceneContextType, HatchPath } from '@/types';
-import { v4 as uuidv4 } from 'uuid'; // For generating unique IDs
+import { v4 as uuidv4 } from 'uuid'; // For generating unique IDs for NEW items
 
 const defaultCameraState: CameraState = {
   position: { x: 5, y: 5, z: 5 },
@@ -13,8 +13,9 @@ const defaultCameraState: CameraState = {
   far: 1000,
 };
 
+// Use static IDs for initial objects and lights to prevent hydration mismatch
 const initialBox: SceneObject = {
-  id: uuidv4(),
+  id: 'initial-box-1', // Static ID
   type: 'box',
   position: { x: 0, y: 0, z: 0 },
   rotation: { x: 0, y: 0, z: 0 },
@@ -24,7 +25,7 @@ const initialBox: SceneObject = {
 };
 
 const initialSphere: SceneObject = {
-  id: uuidv4(),
+  id: 'initial-sphere-1', // Static ID
   type: 'sphere',
   position: { x: 2, y: 0.5, z: -1 },
   rotation: { x: 0, y: 0, z: 0 },
@@ -34,7 +35,7 @@ const initialSphere: SceneObject = {
 };
 
 const initialLight: SceneLight = {
-  id: uuidv4(),
+  id: 'initial-light-1', // Static ID
   type: 'directional',
   position: { x: 3, y: 5, z: 4 },
   target: { x: 0, y: 0, z: 0 },
@@ -62,7 +63,7 @@ export const SceneProvider: React.FC<{ children: ReactNode }> = ({ children }) =
   }, []);
 
   const addLight = useCallback((lightData: Omit<SceneLight, 'id' | 'castShadow'>) => {
-    const newLight: SceneLight = { ...lightData, id: uuidv4(), castShadow: true };
+    const newLight: SceneLight = { ...lightData, id: uuidv4(), castShadow: true }; // uuidv4 for new items is fine
     setSceneState(prev => ({ ...prev, lights: [...prev.lights, newLight], isDirty: true }));
   }, []);
 
@@ -79,7 +80,7 @@ export const SceneProvider: React.FC<{ children: ReactNode }> = ({ children }) =
   }, []);
 
   const addObject = useCallback((objectData: Omit<SceneObject, 'id'>) => {
-    const newObject: SceneObject = { ...objectData, id: uuidv4() };
+    const newObject: SceneObject = { ...objectData, id: uuidv4() }; // uuidv4 for new items is fine
     setSceneState(prev => ({ ...prev, objects: [...prev.objects, newObject], isDirty: true }));
   }, []);
   
@@ -129,3 +130,4 @@ export const useScene = (): SceneContextType => {
   }
   return context;
 };
+
