@@ -4,7 +4,6 @@ import type { NextPage } from 'next';
 import dynamic from 'next/dynamic';
 import { SceneProvider } from '@/context/SceneContext';
 import ControlsPanel from '@/components/ControlsPanel';
-import { Toaster } from '@/components/ui/toaster';
 import { HatchPlot3DIcon } from '@/components/icons';
 import { SidebarProvider, Sidebar, SidebarInset, SidebarHeader, SidebarTrigger } from '@/components/ui/sidebar';
 
@@ -24,7 +23,7 @@ const Home: NextPage = () => {
           </SidebarHeader>
           <ControlsPanel />
         </Sidebar>
-        <SidebarInset className="flex flex-col h-screen">
+        <SidebarInset className="flex flex-col h-screen"> {/* SidebarInset renders a <main> tag */}
            <header className="p-4 border-b flex items-center justify-between md:hidden">
              <div className="flex items-center gap-2">
                 <HatchPlot3DIcon className="w-6 h-6 text-primary" />
@@ -32,12 +31,13 @@ const Home: NextPage = () => {
              </div>
             <SidebarTrigger />
           </header>
-          <main className="flex-1 relative">
+          {/* Use a div for layout instead of a nested main tag */}
+          <div className="flex-1 relative">
             <SceneViewerWithNoSSR />
-          </main>
+          </div>
         </SidebarInset>
       </SidebarProvider>
-      <Toaster />
+      {/* Toaster is in layout.tsx */}
     </SceneProvider>
   );
 };
