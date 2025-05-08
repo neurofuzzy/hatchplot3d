@@ -94,9 +94,9 @@ export function generateHatchLines(
 }
 
 export function exportToSVG(hatchPaths: HatchPath[], camera: THREE.PerspectiveCamera | THREE.OrthographicCamera, sceneWidth: number, sceneHeight: number): string {
-  let svgString = `<svg width="${sceneWidth}" height="${sceneHeight}" xmlns="http://www.w3.org/2000/svg" style="background-color: hsl(var(--background));">\n`;
+  let svgString = `<svg width="${sceneWidth}" height="${sceneHeight}" xmlns="http://www.w3.org/2000/svg" style="background-color: hsl(var(--background));">\\n`;
   // SVG group to move origin to center and flip Y axis (Y points up)
-  svgString += `<g transform="translate(${sceneWidth / 2}, ${sceneHeight / 2}) scale(1, -1)">\n`;
+  svgString += `<g transform="translate(${sceneWidth / 2}, ${sceneHeight / 2}) scale(1, -1)">\\n`;
 
   // Ensure camera matrices are up to date for projection
   camera.updateMatrixWorld(); // Important for camera.matrixWorldInverse
@@ -121,11 +121,11 @@ export function exportToSVG(hatchPaths: HatchPath[], camera: THREE.PerspectiveCa
       });
       
       // Use a stroke color that contrasts with the background (foreground color)
-      svgString += `  <polyline points="${points.join(' ')}" stroke="hsl(var(--foreground))" stroke-width="1" fill="none" />\n`;
+      svgString += `  <polyline points="${points.join(' ')}" stroke="hsl(var(--foreground))" stroke-width="1" fill="none" />\\n`;
     }
   });
 
-  svgString += `</g>\n</svg>`;
+  svgString += `</g>\\n</svg>`;
   return svgString;
 }
 
@@ -173,10 +173,10 @@ export function createObjectMeshes(objects: SceneObject[]): THREE.Mesh[] {
   });
 }
 
-export function createLightSources(lights: SceneLight[]): Array<{light: THREE.Light, helper?: THREE.LightHelper}> {
+export function createLightSources(lights: SceneLight[]): Array<{light: THREE.Light, helper?: any}> { // Changed THREE.LightHelper to any
   return lights.map(lightData => {
     let light: THREE.Light;
-    let helper: THREE.LightHelper | undefined = undefined;
+    let helper: any | undefined = undefined; // Changed THREE.LightHelper to any
 
     switch (lightData.type) {
       case 'directional':

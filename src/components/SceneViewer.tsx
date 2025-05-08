@@ -18,21 +18,21 @@ const SceneViewer: React.FC = () => {
   const sceneRef = useRef<THREE.Scene | null>(null);
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
   const controlsRef = useRef<OrbitControls | null>(null);
-  const hatchLinesRef: MutableRefObject<THREE.Group | null> = useRef<THREE.Group | null>(null);
-  const lightHelpersRef = useRef<Map<string, THREE.LightHelper>>(new Map());
+  const hatchLinesGroupRef: MutableRefObject<THREE.Group | null> = useRef<THREE.Group | null>(null); // Renamed for clarity
+  const lightHelpersRef = useRef<Map<string, any>>(new Map()); // Changed THREE.LightHelper to any
 
 
   const updateHatchVisuals = useCallback((paths: HatchPath[]) => {
-    if (!sceneRef.current || !hatchLinesRef.current) return;
+    if (!sceneRef.current || !hatchLinesGroupRef.current) return;
 
     // Clear previous hatch lines
-    hatchLinesRef.current.children.forEach(child => {
+    hatchLinesGroupRef.current.children.forEach(child => {
         if (child instanceof THREE.Line) {
             child.geometry.dispose();
             (child.material as THREE.Material).dispose();
         }
     });
-    hatchLinesRef.current.clear();
+    hatchLinesGroupRef.current.clear();
 
     paths.forEach(path => {
       if (path.length > 0) {
@@ -48,7 +48,7 @@ const SceneViewer: React.FC = () => {
             const geometry = new THREE.BufferGeometry().setFromPoints(points);
             const material = new THREE.LineBasicMaterial({ color: 0xffffff }); // White lines for dark paper
             const line = new THREE.Line(geometry, material);
-            hatchLinesRef.current!.add(line);
+            hatchLinesGroupRef.current!.add(line);
         }
       }
     });
@@ -68,8 +68,8 @@ const SceneViewer: React.FC = () => {
     scene.background = new THREE.Color(getComputedStyle(document.documentElement).getPropertyValue('--background').trim() || '#333333');
     sceneRef.current = scene;
     
-    hatchLinesRef.current = new THREE.Group();
-    scene.add(hatchLinesRef.current);
+    hatchLinesGroupRef.current = new THREE.Group(); // Initialize the hatch lines group
+    scene.add(hatchLinesGroupRef.current);
 
     const camera = new THREE.PerspectiveCamera(
       cameraState.fov,
@@ -137,7 +137,7 @@ const SceneViewer: React.FC = () => {
           }
         }
       });
-      hatchLinesRef.current?.traverse((object) => {
+      hatchLinesGroupRef.current?.traverse((object) => { // Use renamed ref
         if (object instanceof THREE.Line) {
             object.geometry.dispose();
             (object.material as THREE.Material).dispose();
@@ -159,18 +159,19 @@ const SceneViewer: React.FC = () => {
     // Clear existing objects, lights, and their helpers (except camera and hatch group)
     const objectsToRemove = sceneRef.current.children.filter(
       child => !(child instanceof THREE.Camera) && 
-               child !== hatchLinesRef.current && 
+               child !== hatchLinesGroupRef.current && // Use renamed ref
                !(child.userData.isAmbientLight) && // Keep default ambient if present
-               !(child instanceof THREE.LightHelper) // Remove old helpers
+               // !(child instanceof THREE.LightHelper) && // This line caused the error and is removed
+               !(child instanceof THREE.DirectionalLightHelper) // And specific types if needed
     );
     objectsToRemove.forEach(child => {
         if (child instanceof THREE.Light && child.target && child.target.parent === sceneRef.current) {
             sceneRef.current!.remove(child.target); // Remove target if it was added
         }
-        sceneRef.current!.remove(child)
+        if (child.parent) child.parent.remove(child); // Ensure removal from parent
     });
 
-    // Dispose and clear old light helpers
+    // Dispose and clear old light helpers from the map and scene
     lightHelpersRef.current.forEach(helper => {
         helper.dispose();
         if (helper.parent) helper.parent.remove(helper);
@@ -185,7 +186,7 @@ const SceneViewer: React.FC = () => {
     const lightSourceData = createLightSources(lights);
     lightSourceData.forEach(({light, helper}) => {
       sceneRef.current!.add(light);
-      if (light.target && light.target instanceof THREE.Object3D) { // Add target to scene for DirectionalLight
+      if (light.target && light.target instanceof THREE.Object3D) { 
           sceneRef.current!.add(light.target);
       }
       if (helper) {
@@ -195,14 +196,14 @@ const SceneViewer: React.FC = () => {
     });
     
     // Add a general ambient light if no other lights provide ambient illumination
-    if (!sceneRef.current.children.some(l => l instanceof THREE.AmbientLight)) {
-        const ambientLight = new THREE.AmbientLight(0x606060, 1); // Soft white light
+    if (!sceneRef.current.children.some(l => l instanceof THREE.AmbientLight || l.userData.isAmbientLight)) {
+        const ambientLight = new THREE.AmbientLight(0x606060, 1); 
         ambientLight.userData.isAmbientLight = true;
         sceneRef.current.add(ambientLight);
     }
     
-    setDirty(true); // Mark scene as dirty to recalculate hatches
-  }, [objects, lights, setDirty]);
+    setDirty(true); 
+  }, [objects, lights, setDirty]); // Removed sceneRef from dependencies as it's stable
 
   // Recalculate and update hatch lines when scene is dirty or camera perspective changes
    useEffect(() => {
@@ -215,7 +216,7 @@ const SceneViewer: React.FC = () => {
       }
       setDirty(false);
     }
-  }, [isDirty, objects, lights, cameraState, setHatchLines, setDirty, sceneRef]);
+  }, [isDirty, objects, lights, cameraState, setHatchLines, setDirty]); // Removed sceneRef
 
   // Update visual representation of hatch lines when hatchLines data changes
   useEffect(() => {
