@@ -1,222 +1,145 @@
 
 import * as THREE from 'three';
-import type { HatchPath, SceneLight, SceneObject } from '@/types';
-
-// Helper function: Intersect two infinite coplanar lines in 3D
-// Line 1: p1 + t*d1
-// Line 2: p2 + u*d2
-function intersectCoplanarLines(
-    p1: THREE.Vector3, d1: THREE.Vector3,
-    p2: THREE.Vector3, d2: THREE.Vector3,
-    epsilon = 1e-6
-): THREE.Vector3 | null {
-    const d1Norm = d1.clone().normalize();
-    const d2Norm = d2.clone().normalize();
-
-    // Check if lines are parallel
-    const crossDirs = new THREE.Vector3().crossVectors(d1Norm, d2Norm);
-    if (crossDirs.lengthSq() < epsilon * epsilon) {
-        return null;
-    }
-
-    const w0 = new THREE.Vector3().subVectors(p1, p2);
-    const a = d1.dot(d1); 
-    const b = d1.dot(d2);
-    const c = d2.dot(d2);
-    const d = d1.dot(w0);
-    const e = d2.dot(w0);
-
-    const denom = a * c - b * b;
-
-    if (Math.abs(denom) < epsilon * epsilon) {
-        return null;
-    }
-
-    const t = (b * e - c * d) / denom;
-    return p1.clone().addScaledVector(d1, t);
-}
-
-// Helper: Check if point P lies on segment AB (P must be collinear with A,B)
-function isPointOnSegment(p: THREE.Vector3, a: THREE.Vector3, b: THREE.Vector3, epsilon = 1e-5): boolean {
-    const abDistSq = a.distanceToSquared(b);
-    if (abDistSq < epsilon * epsilon) { 
-        return p.distanceToSquared(a) < epsilon * epsilon;
-    }
-    const pa = new THREE.Vector3().subVectors(p,a);
-    const ba = new THREE.Vector3().subVectors(b,a);
-    const dotPaBa = pa.dot(ba);
-    if (dotPaBa < -epsilon || dotPaBa > abDistSq + epsilon) { 
-        return false;
-    }
-    // Additionally, check for collinearity robustly using cross product
-    // If P, A, B are collinear, cross product (P-A)x(B-A) should be zero vector.
-    const crossCollinear = new THREE.Vector3().crossVectors(pa, ba);
-    if (crossCollinear.lengthSq() > epsilon * epsilon * abDistSq) { // scaled epsilon for robustness
-        return false; // Not collinear enough
-    }
-    return true;
-}
-
+import type { HatchPath, SceneLight, SceneObject, HatchLineSegment } from '@/types';
 
 export function generateHatchLines(
-  objects: SceneObject[],
+  objectMeshes: THREE.Mesh[],
   lights: SceneLight[],
-  camera: THREE.PerspectiveCamera | THREE.OrthographicCamera // Unused for generation for now
+  _camera: THREE.PerspectiveCamera | THREE.OrthographicCamera // Camera currently unused for generation logic
 ): HatchPath[] {
-  const allHatchLines: HatchPath[] = [];
-  if (objects.length === 0 || lights.length === 0) {
+  const allHatchPaths: HatchPath[] = [];
+
+  if (objectMeshes.length === 0 || lights.length === 0) {
     return [];
   }
 
-  const tempMeshes = createObjectMeshes(objects);
+  objectMeshes.forEach(mesh => mesh.updateMatrixWorld(true)); // Ensure matrices are up-to-date
 
-  tempMeshes.forEach((mesh) => {
-    mesh.updateMatrixWorld(true);
-    const geometry = mesh.geometry;
-    const worldMatrix = mesh.matrixWorld;
+  lights.forEach((light) => {
+    if (light.type !== 'directional') return;
 
-    const positionsAttr = geometry.attributes.position;
-    const indicesAttr = geometry.index;
-    const vertices: THREE.Vector3[] = [];
-    for (let i = 0; i < positionsAttr.count; i++) {
-      vertices.push(new THREE.Vector3().fromBufferAttribute(positionsAttr, i));
+    const lightPosition = new THREE.Vector3(light.position.x, light.position.y, light.position.z);
+    const lightTarget = new THREE.Vector3(light.target.x, light.target.y, light.target.z);
+    const lightDirection = new THREE.Vector3().subVectors(lightTarget, lightPosition).normalize();
+
+    const sceneBoundingBox = new THREE.Box3();
+    objectMeshes.forEach(mesh => {
+      sceneBoundingBox.expandByObject(mesh);
+    });
+
+    if (sceneBoundingBox.isEmpty()) return;
+
+    const planePoint = sceneBoundingBox.getCenter(new THREE.Vector3());
+    const hatchBasePlane = new THREE.Plane().setFromNormalAndCoplanarPoint(lightDirection, planePoint);
+
+    let hatchLineDirectionOnPlane = new THREE.Vector3(1, 0, 0);
+    if (Math.abs(hatchLineDirectionOnPlane.dot(lightDirection)) > 0.99) { // Check if X-axis is too aligned with light direction
+        hatchLineDirectionOnPlane.set(0, 1, 0); // Try Y-axis
     }
+    hatchLineDirectionOnPlane.projectOnPlane(lightDirection).normalize();
+    if (hatchLineDirectionOnPlane.lengthSq() < 0.1) { // If projection is too small (e.g. lightDirection is world X or Y)
+        hatchLineDirectionOnPlane.set(0,0,1); // Try Z-axis as a last resort before applying rotation
+        hatchLineDirectionOnPlane.projectOnPlane(lightDirection).normalize();
+        if (hatchLineDirectionOnPlane.lengthSq() < 0.1) return; // Cannot determine a valid base hatch direction
+    }
+    hatchLineDirectionOnPlane.applyAxisAngle(lightDirection, THREE.MathUtils.degToRad(light.hatchAngle));
 
-    lights.forEach((light) => {
-      if (light.type !== 'directional') return;
+    const scanDirection = new THREE.Vector3().crossVectors(hatchLineDirectionOnPlane, lightDirection).normalize();
+     if (scanDirection.lengthSq() < 0.1) return; // Cannot determine scan direction
 
-      const lightSourcePos = new THREE.Vector3(light.position.x, light.position.y, light.position.z);
-      const lightTargetPos = new THREE.Vector3(light.target.x, light.target.y, light.target.z);
-      const lightRayDirection = new THREE.Vector3().subVectors(lightTargetPos, lightSourcePos).normalize();
 
-      const processTriangle = (vA_local: THREE.Vector3, vB_local: THREE.Vector3, vC_local: THREE.Vector3) => {
-        const vA = vA_local.clone().applyMatrix4(worldMatrix);
-        const vB = vB_local.clone().applyMatrix4(worldMatrix);
-        const vC = vC_local.clone().applyMatrix4(worldMatrix);
+    let minScan = Infinity, maxScan = -Infinity;
+    objectMeshes.forEach(mesh => {
+      const geom = mesh.geometry;
+      const posAttr = geom.attributes.position;
+      const tempVertex = new THREE.Vector3();
+      for (let i = 0; i < posAttr.count; i++) {
+        tempVertex.fromBufferAttribute(posAttr, i);
+        const vWorld = tempVertex.clone().applyMatrix4(mesh.matrixWorld);
+        const vProjectedOnPlane = hatchBasePlane.projectPoint(vWorld, new THREE.Vector3());
+        const scanVal = vProjectedOnPlane.dot(scanDirection);
+        minScan = Math.min(minScan, scanVal);
+        maxScan = Math.max(maxScan, scanVal);
+      }
+    });
+    
+    if (minScan === Infinity || maxScan === -Infinity || (maxScan - minScan) < 0.001) return;
 
-        const edge1 = new THREE.Vector3().subVectors(vB, vA);
-        const edge2 = new THREE.Vector3().subVectors(vC, vA);
-        const triNormal = new THREE.Vector3().crossVectors(edge1, edge2).normalize();
+    const scanRange = maxScan - minScan;
+    const numHatchLines = Math.max(1, Math.floor(light.intensity * scanRange * 5)); // Density scales with projected size
+    const lineSpacing = scanRange / (numHatchLines + 1);
 
-        if (triNormal.lengthSq() < 0.0001) return; 
+    for (let i = 1; i <= numHatchLines; i++) {
+      const scanOffset = minScan + i * lineSpacing;
+      const masterLinePoint = planePoint.clone().addScaledVector(scanDirection, scanOffset - planePoint.dot(scanDirection));
 
-        if (triNormal.dot(lightRayDirection) < -0.01) { 
-          const numLines = Math.max(1, Math.floor(light.intensity * 15)); 
+      // This plane contains the "master" hatch line and is parallel to the light direction
+      const hatchCuttingPlaneNormal = new THREE.Vector3().crossVectors(hatchLineDirectionOnPlane, lightDirection).normalize();
+      if (hatchCuttingPlaneNormal.lengthSq() < 0.1) continue; // Invalid plane
+      const hatchCuttingPlane = new THREE.Plane().setFromNormalAndCoplanarPoint(hatchCuttingPlaneNormal, masterLinePoint);
+      
+      const segmentsForThisMasterLine: HatchLineSegment[] = [];
 
-          let refEdge = edge1.lengthSq() > edge2.lengthSq() ? edge1.clone() : edge2.clone();
-          if (refEdge.lengthSq() < 0.0001) { 
-            refEdge = new THREE.Vector3().subVectors(vC,vB);
-            if (refEdge.lengthSq() < 0.0001) return; 
+      objectMeshes.forEach(mesh => {
+        const geometry = mesh.geometry;
+        const positionAttribute = geometry.attributes.position;
+        const worldMatrix = mesh.matrixWorld;
+
+        const vertices: THREE.Vector3[] = [];
+        const tempVertex = new THREE.Vector3();
+        for (let j = 0; j < positionAttribute.count; j++) {
+          tempVertex.fromBufferAttribute(positionAttribute, j);
+          vertices.push(tempVertex.clone());
+        }
+
+        const processTriangle = (vA_local: THREE.Vector3, vB_local: THREE.Vector3, vC_local: THREE.Vector3) => {
+          const vA = vA_local.clone().applyMatrix4(worldMatrix);
+          const vB = vB_local.clone().applyMatrix4(worldMatrix);
+          const vC = vC_local.clone().applyMatrix4(worldMatrix);
+
+          const tri = new THREE.Triangle(vA, vB, vC);
+          const triNormal = tri.getNormal(new THREE.Vector3());
+
+          // Check if triangle faces towards the light (or perpendicular)
+          // lightDirection points from light source to target. If normal dot lightDir > 0, backface from light's POV.
+          if (triNormal.dot(lightDirection) > -0.001) { 
+            return;
           }
 
-          let hatchBaseDir = refEdge.clone().normalize();
-          hatchBaseDir.applyAxisAngle(triNormal, THREE.MathUtils.degToRad(light.hatchAngle));
+          const intersectionLine = new THREE.Line3();
+          const resultLine = hatchCuttingPlane.intersectTriangle(tri, intersectionLine);
 
-          const hatchLineDir = new THREE.Vector3(); // Declare once
-          hatchLineDir.crossVectors(triNormal, hatchBaseDir).normalize();
-          
-          if (hatchLineDir.lengthSq() < 0.5) { 
-             let fallbackBaseDir = new THREE.Vector3(1,0,0).applyQuaternion(mesh.quaternion);
-             fallbackBaseDir.projectOnPlane(triNormal).normalize();
-             
-             if (fallbackBaseDir.lengthSq() < 0.5) {
-                fallbackBaseDir = new THREE.Vector3(0,0,1).applyQuaternion(mesh.quaternion); // Try Z-axis if X fails
-                fallbackBaseDir.projectOnPlane(triNormal).normalize();
-             }
-
-             if (fallbackBaseDir.lengthSq() < 0.5) return; 
-             
-             // Apply hatchAngle to this new fallbackBaseDir
-             fallbackBaseDir.applyAxisAngle(triNormal, THREE.MathUtils.degToRad(light.hatchAngle));
-             
-             hatchLineDir.crossVectors(triNormal, fallbackBaseDir).normalize(); 
-             if(hatchLineDir.lengthSq() < 0.5) return; 
-          }
-
-
-          const scanAxis = new THREE.Vector3().crossVectors(hatchLineDir, triNormal).normalize();
-          if (scanAxis.lengthSq() < 0.5) return; // scanAxis could not be determined
-
-          const projA = vA.dot(scanAxis);
-          const projB = vB.dot(scanAxis);
-          const projC = vC.dot(scanAxis);
-          const minProj = Math.min(projA, projB, projC);
-          const maxProj = Math.max(projA, projB, projC);
-          const scanRange = maxProj - minProj;
-
-          if (scanRange < 0.001) return; 
-
-          const spacing = scanRange / (numLines + 1);
-          const centroid = new THREE.Vector3().add(vA).add(vB).add(vC).divideScalar(3);
-          const centroidProj = centroid.dot(scanAxis);
-
-          for (let i = 1; i <= numLines; i++) {
-            const scanPos = minProj + i * spacing;
-            const originForScanLine = centroid.clone().addScaledVector(scanAxis, scanPos - centroidProj);
-
-            const intersections: THREE.Vector3[] = [];
-            const edges = [
-                {p1: vA, p2: vB, d: edge1},
-                {p1: vB, p2: vC, d: new THREE.Vector3().subVectors(vC, vB)},
-                {p1: vC, p2: vA, d: new THREE.Vector3().subVectors(vA, vC)}
-            ];
-
-            edges.forEach(edge => {
-                if (edge.d.lengthSq() < 0.000001) return; // Skip zero-length edges
-                const edgeDir = edge.d.clone().normalize(); // Normalize for robust intersection check
-                const intersection = intersectCoplanarLines(originForScanLine, hatchLineDir, edge.p1, edge.d /* Use non-normalized edge.d */);
-                if (intersection) {
-                    if (isPointOnSegment(intersection, edge.p1, edge.p2)) {
-                        if (!intersections.some(pt => pt.distanceToSquared(intersection) < 0.00001)) {
-                           intersections.push(intersection);
-                        }
-                    }
-                }
-            });
-
-            intersections.sort((p_a, p_b) => { 
-                return p_a.dot(hatchLineDir) - p_b.dot(hatchLineDir);
-            });
-
-            if (intersections.length >= 2) {
-                const p1 = intersections[0];
-                const p2 = intersections[intersections.length - 1];
-                if (p1.distanceToSquared(p2) > 0.0001) { 
-                    allHatchLines.push([{
-                        start: { x: p1.x, y: p1.y, z: p1.z },
-                        end: { x: p2.x, y: p2.y, z: p2.z }
-                    }]);
-                }
+          if (resultLine) { // resultLine is not null, intersectionLine is populated
+            if (intersectionLine.start.distanceToSquared(intersectionLine.end) > 0.0001) { // Ensure it's a valid segment
+              segmentsForThisMasterLine.push({
+                start: { x: intersectionLine.start.x, y: intersectionLine.start.y, z: intersectionLine.start.z },
+                end: { x: intersectionLine.end.x, y: intersectionLine.end.y, z: intersectionLine.end.z }
+              });
             }
           }
-        }
-      }; 
+        };
 
-      if (indicesAttr) {
-        for (let i = 0; i < indicesAttr.count; i += 3) {
-          const vA_idx = indicesAttr.getX(i);
-          const vB_idx = indicesAttr.getX(i + 1);
-          const vC_idx = indicesAttr.getX(i + 2);
-          processTriangle(vertices[vA_idx], vertices[vB_idx], vertices[vC_idx]);
+        const indices = geometry.index;
+        if (indices) {
+          for (let k = 0; k < indices.count; k += 3) {
+            processTriangle(vertices[indices.getX(k)], vertices[indices.getX(k + 1)], vertices[indices.getX(k + 2)]);
+          }
+        } else {
+          for (let k = 0; k < vertices.length; k += 3) {
+            processTriangle(vertices[k], vertices[k + 1], vertices[k + 2]);
+          }
         }
-      } else {
-        for (let i = 0; i < vertices.length; i += 3) {
-          processTriangle(vertices[i], vertices[i + 1], vertices[i + 2]);
-        }
-      }
-    }); 
-  }); 
+      });
 
-  tempMeshes.forEach(mesh => {
-    mesh.geometry.dispose();
-    if (Array.isArray(mesh.material)) {
-      mesh.material.forEach(m => m.dispose());
-    } else {
-      (mesh.material as THREE.Material).dispose();
+      // For now, each segment found for this master line becomes its own path.
+      // TODO: Join collinear and overlapping/adjacent segments from segmentsForThisMasterLine
+      segmentsForThisMasterLine.forEach(segment => {
+        allHatchPaths.push([segment]);
+      });
     }
   });
 
-  return allHatchLines;
+  return allHatchPaths;
 }
 
 
@@ -237,11 +160,18 @@ export function exportToSVG(hatchPaths: HatchPath[], camera: THREE.PerspectiveCa
       if (hslParts) {
         strokeColor = `hsl(${hslParts[1]}, ${hslParts[2]}%, ${hslParts[3]}%)`;
       } else {
-        strokeColor = fgCssValue;
+        // Attempt to parse if it's already a valid color string
+        const testColor = new THREE.Color();
+        try {
+            testColor.set(fgCssValue);
+            strokeColor = fgCssValue; // It's a valid color string
+        } catch (e) {
+            // Not a simple HSL or recognizable color string, use default
+            console.warn("Failed to parse --foreground for SVG export (not HSL or recognized format), defaulting.", e);
+        }
       }
     } catch (e) {
-      console.warn("Failed to parse --foreground for SVG export, defaulting to #f0f0f0", e);
-      strokeColor = "#f0f0f0"; 
+      console.warn("Failed to parse --foreground for SVG export, defaulting.", e);
     }
   }
 
@@ -273,8 +203,12 @@ export function exportToSVG(hatchPaths: HatchPath[], camera: THREE.PerspectiveCa
 
 function projectToScreen(vector3: THREE.Vector3, projectionMatrix: THREE.Matrix4, width: number, height: number): { x: number, y: number } {
     const projected = vector3.clone().applyMatrix4(projectionMatrix);
+    // Convert NDC to screen coordinates
+    // NDC range is -1 to 1 for x, y, z (if inside frustum)
+    // SVG origin is top-left for the <g> element's parent, but we transformed <g> to center with Y inverted.
+    // So, x from -width/2 to width/2, y from -height/2 to height/2 (after g transform)
     const x = projected.x * (width / 2);
-    const y = projected.y * (height / 2);
+    const y = projected.y * (height / 2); // Y is already inverted by the <g> scale(1,-1)
     return { x, y };
 }
 
@@ -287,7 +221,7 @@ export function createObjectMeshes(objects: SceneObject[]): THREE.Mesh[] {
       polygonOffset: true, 
       polygonOffsetFactor: 1,
       polygonOffsetUnits: 1,
-      roughness: 0.8, // Reduce shininess for better hatch visibility
+      roughness: 0.8, 
       metalness: 0.1
     });
 
@@ -302,19 +236,19 @@ export function createObjectMeshes(objects: SceneObject[]): THREE.Mesh[] {
       case 'sphere':
         geometry = new THREE.SphereGeometry(
           obj.geometryParams.radius || 0.5,
-          obj.geometryParams.widthSegments || 32,
-          obj.geometryParams.heightSegments || 16
+          obj.geometryParams.widthSegments || 32, // Increased segments for smoother sphere
+          obj.geometryParams.heightSegments || 16 // Increased segments for smoother sphere
         );
         break;
       default:
-        geometry = new THREE.BoxGeometry(1, 1, 1);
+        geometry = new THREE.BoxGeometry(1, 1, 1); // Fallback
         console.warn(`Unknown object type "${obj.type}", defaulting to BoxGeometry.`);
     }
     const mesh = new THREE.Mesh(geometry, material);
     mesh.position.set(obj.position.x, obj.position.y, obj.position.z);
     mesh.rotation.set(obj.rotation.x, obj.rotation.y, obj.rotation.z);
     mesh.scale.set(obj.scale.x, obj.scale.y, obj.scale.z);
-    mesh.userData = { id: obj.id }; 
+    mesh.userData = { id: obj.id, type: obj.type }; // Store ID and type for potential filtering
     return mesh;
   });
 }
@@ -323,21 +257,29 @@ export function createLightSources(lights: SceneLight[]): Array<{light: THREE.Li
   return lights.map(lightData => {
     let light: THREE.Light;
     let helper: THREE.DirectionalLightHelper | THREE.SpotLightHelper | THREE.PointLightHelper | undefined = undefined;
+    const lightColor = new THREE.Color(lightData.color);
 
     switch (lightData.type) {
       case 'directional':
-        const dirLight = new THREE.DirectionalLight(lightData.color, 0.8); 
+        const dirLight = new THREE.DirectionalLight(lightColor, 0.8); // Intensity here is for scene lighting, not hatching density directly
         dirLight.position.set(lightData.position.x, lightData.position.y, lightData.position.z);
         dirLight.target.position.set(lightData.target.x, lightData.target.y, lightData.target.z);
         light = dirLight;
-        helper = new THREE.DirectionalLightHelper(dirLight, 1, new THREE.Color(lightData.color).multiplyScalar(0.7)); 
+        // Helper color should be distinct if scene light color is too dark/light for visibility
+        let helperColor = lightColor.clone().multiplyScalar(0.7);
+        if (helperColor.getHSL({h:0,s:0,l:0}).l < 0.1) helperColor.setHex(0xffffff); // if too dark, make white
+        helper = new THREE.DirectionalLightHelper(dirLight, 1, helperColor); 
         break;
       default:
-        const ambient = new THREE.AmbientLight(0xffffff, 0.1);
+        const ambient = new THREE.AmbientLight(0xffffff, 0.1); // Default fallback
         light = ambient;
         console.warn(`Unsupported or unknown light type "${lightData.type}", defaulting to AmbientLight.`);
     }
-    light.userData = { id: lightData.id, hatchAngle: lightData.hatchAngle, originalIntensity: lightData.intensity }; 
+    light.userData = { 
+        id: lightData.id, 
+        hatchAngle: lightData.hatchAngle, 
+        originalIntensity: lightData.intensity // Store original intensity for hatching logic
+    }; 
     return {light, helper};
   });
 }
