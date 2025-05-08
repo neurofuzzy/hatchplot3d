@@ -1,3 +1,4 @@
+
 'use client';
 
 import type { ReactNode } from 'react';
@@ -6,8 +7,8 @@ import type { SceneState, SceneLight, SceneObject, CameraState, SceneContextType
 import { v4 as uuidv4 } from 'uuid'; // For generating unique IDs for NEW items
 
 const defaultCameraState: CameraState = {
-  position: { x: 5, y: 5, z: 5 },
-  lookAt: { x: 0, y: 0, z: 0 },
+  position: { x: 3.5, y: 3, z: 7 }, // Adjusted for a better initial overview
+  lookAt: { x: 1, y: 0.5, z: 0 }, // Centered more towards the initial object group
   fov: 50,
   near: 0.1,
   far: 1000,
@@ -41,7 +42,7 @@ const initialLight: SceneLight = {
   target: { x: 0, y: 0, z: 0 },
   color: '#ffffff',
   intensity: 0.8, // Maps to hatch density
-  hatchAngle: 0, // Default hatch angle
+  hatchAngle: 45, // Default hatch angle, changed for better visibility
   castShadow: true,
 };
 
