@@ -13,7 +13,11 @@ export function generateHatchLines(
     return [];
   }
 
-  objectMeshes.forEach(mesh => mesh.updateMatrixWorld(true)); // Ensure matrices are up-to-date
+  objectMeshes.forEach(mesh => {
+    if (mesh.userData.isHelper) return; // Skip helper objects like grid/axes
+    mesh.updateMatrixWorld(true); // Ensure matrices are up-to-date
+  });
+
 
   lights.forEach((light) => {
     if (light.type !== 'directional') return;
@@ -24,6 +28,7 @@ export function generateHatchLines(
 
     const sceneBoundingBox = new THREE.Box3();
     objectMeshes.forEach(mesh => {
+      if (mesh.userData.isHelper) return;
       sceneBoundingBox.expandByObject(mesh);
     });
 
@@ -33,23 +38,24 @@ export function generateHatchLines(
     const hatchBasePlane = new THREE.Plane().setFromNormalAndCoplanarPoint(lightDirection, planePoint);
 
     let hatchLineDirectionOnPlane = new THREE.Vector3(1, 0, 0);
-    if (Math.abs(hatchLineDirectionOnPlane.dot(lightDirection)) > 0.99) { // Check if X-axis is too aligned with light direction
-        hatchLineDirectionOnPlane.set(0, 1, 0); // Try Y-axis
+    if (Math.abs(hatchLineDirectionOnPlane.dot(lightDirection)) > 0.99) {
+        hatchLineDirectionOnPlane.set(0, 1, 0);
     }
     hatchLineDirectionOnPlane.projectOnPlane(lightDirection).normalize();
-    if (hatchLineDirectionOnPlane.lengthSq() < 0.1) { // If projection is too small (e.g. lightDirection is world X or Y)
-        hatchLineDirectionOnPlane.set(0,0,1); // Try Z-axis as a last resort before applying rotation
+    if (hatchLineDirectionOnPlane.lengthSq() < 0.1) {
+        hatchLineDirectionOnPlane.set(0,0,1);
         hatchLineDirectionOnPlane.projectOnPlane(lightDirection).normalize();
-        if (hatchLineDirectionOnPlane.lengthSq() < 0.1) return; // Cannot determine a valid base hatch direction
+        if (hatchLineDirectionOnPlane.lengthSq() < 0.1) return;
     }
     hatchLineDirectionOnPlane.applyAxisAngle(lightDirection, THREE.MathUtils.degToRad(light.hatchAngle));
 
     const scanDirection = new THREE.Vector3().crossVectors(hatchLineDirectionOnPlane, lightDirection).normalize();
-     if (scanDirection.lengthSq() < 0.1) return; // Cannot determine scan direction
+     if (scanDirection.lengthSq() < 0.1) return;
 
 
     let minScan = Infinity, maxScan = -Infinity;
     objectMeshes.forEach(mesh => {
+      if (mesh.userData.isHelper) return;
       const geom = mesh.geometry;
       const posAttr = geom.attributes.position;
       const tempVertex = new THREE.Vector3();
@@ -66,21 +72,22 @@ export function generateHatchLines(
     if (minScan === Infinity || maxScan === -Infinity || (maxScan - minScan) < 0.001) return;
 
     const scanRange = maxScan - minScan;
-    const numHatchLines = Math.max(1, Math.floor(light.intensity * scanRange * 5)); // Density scales with projected size
+    const numHatchLines = Math.max(1, Math.floor(light.intensity * scanRange * 10)); // Increased density factor
     const lineSpacing = scanRange / (numHatchLines + 1);
 
     for (let i = 1; i <= numHatchLines; i++) {
       const scanOffset = minScan + i * lineSpacing;
       const masterLinePoint = planePoint.clone().addScaledVector(scanDirection, scanOffset - planePoint.dot(scanDirection));
 
-      // This plane contains the "master" hatch line and is parallel to the light direction
       const hatchCuttingPlaneNormal = new THREE.Vector3().crossVectors(hatchLineDirectionOnPlane, lightDirection).normalize();
-      if (hatchCuttingPlaneNormal.lengthSq() < 0.1) continue; // Invalid plane
+      if (hatchCuttingPlaneNormal.lengthSq() < 0.1) continue;
       const hatchCuttingPlane = new THREE.Plane().setFromNormalAndCoplanarPoint(hatchCuttingPlaneNormal, masterLinePoint);
       
       const segmentsForThisMasterLine: HatchLineSegment[] = [];
 
       objectMeshes.forEach(mesh => {
+        if (mesh.userData.isHelper) return; // Ensure we don't try to hatch helper objects
+
         const geometry = mesh.geometry;
         const positionAttribute = geometry.attributes.position;
         const worldMatrix = mesh.matrixWorld;
@@ -93,27 +100,54 @@ export function generateHatchLines(
         }
 
         const processTriangle = (vA_local: THREE.Vector3, vB_local: THREE.Vector3, vC_local: THREE.Vector3) => {
-          const vA = vA_local.clone().applyMatrix4(worldMatrix);
-          const vB = vB_local.clone().applyMatrix4(worldMatrix);
-          const vC = vC_local.clone().applyMatrix4(worldMatrix);
+          const vA_world = vA_local.clone().applyMatrix4(worldMatrix);
+          const vB_world = vB_local.clone().applyMatrix4(worldMatrix);
+          const vC_world = vC_local.clone().applyMatrix4(worldMatrix);
 
-          const tri = new THREE.Triangle(vA, vB, vC);
-          const triNormal = tri.getNormal(new THREE.Vector3());
+          const tri = new THREE.Triangle(vA_world, vB_world, vC_world);
+          const triNormal = new THREE.Vector3();
+          tri.getNormal(triNormal);
 
-          // Check if triangle faces towards the light (or perpendicular)
-          // lightDirection points from light source to target. If normal dot lightDir > 0, backface from light's POV.
           if (triNormal.dot(lightDirection) > -0.001) { 
             return;
           }
 
-          const intersectionLine = new THREE.Line3();
-          const resultLine = hatchCuttingPlane.intersectTriangle(tri, intersectionLine);
+          const intersectionPoints: THREE.Vector3[] = [];
+          const edges = [
+            new THREE.Line3(vA_world, vB_world),
+            new THREE.Line3(vB_world, vC_world),
+            new THREE.Line3(vC_world, vA_world),
+          ];
 
-          if (resultLine) { // resultLine is not null, intersectionLine is populated
-            if (intersectionLine.start.distanceToSquared(intersectionLine.end) > 0.0001) { // Ensure it's a valid segment
+          edges.forEach(edge => {
+            const intersectPt = new THREE.Vector3();
+            if (hatchCuttingPlane.intersectLine(edge, intersectPt)) {
+              if (!intersectionPoints.some(p => p.distanceToSquared(intersectPt) < 0.000001)) {
+                intersectionPoints.push(intersectPt.clone());
+              }
+            }
+          });
+          
+          if (intersectionPoints.length === 2) {
+            const p1 = intersectionPoints[0];
+            const p2 = intersectionPoints[1];
+            if (p1.distanceToSquared(p2) > 0.00001) {
               segmentsForThisMasterLine.push({
-                start: { x: intersectionLine.start.x, y: intersectionLine.start.y, z: intersectionLine.start.z },
-                end: { x: intersectionLine.end.x, y: intersectionLine.end.y, z: intersectionLine.end.z }
+                start: { x: p1.x, y: p1.y, z: p1.z },
+                end: { x: p2.x, y: p2.y, z: p2.z },
+              });
+            }
+          } else if (intersectionPoints.length > 2) {
+            // Handle coplanar case or multiple edge intersections by sorting along hatch direction
+             intersectionPoints.sort((a, b) => {
+              return a.dot(hatchLineDirectionOnPlane) - b.dot(hatchLineDirectionOnPlane);
+            });
+            const p_start = intersectionPoints[0];
+            const p_end = intersectionPoints[intersectionPoints.length - 1];
+            if (p_start.distanceToSquared(p_end) > 0.00001) {
+              segmentsForThisMasterLine.push({
+                start: { x: p_start.x, y: p_start.y, z: p_start.z },
+                end: { x: p_end.x, y: p_end.y, z: p_end.z },
               });
             }
           }
@@ -131,8 +165,8 @@ export function generateHatchLines(
         }
       });
 
-      // For now, each segment found for this master line becomes its own path.
       // TODO: Join collinear and overlapping/adjacent segments from segmentsForThisMasterLine
+      // For now, each segment found for this master line becomes its own path.
       segmentsForThisMasterLine.forEach(segment => {
         allHatchPaths.push([segment]);
       });
@@ -160,13 +194,11 @@ export function exportToSVG(hatchPaths: HatchPath[], camera: THREE.PerspectiveCa
       if (hslParts) {
         strokeColor = `hsl(${hslParts[1]}, ${hslParts[2]}%, ${hslParts[3]}%)`;
       } else {
-        // Attempt to parse if it's already a valid color string
         const testColor = new THREE.Color();
         try {
             testColor.set(fgCssValue);
-            strokeColor = fgCssValue; // It's a valid color string
+            strokeColor = fgCssValue; 
         } catch (e) {
-            // Not a simple HSL or recognizable color string, use default
             console.warn("Failed to parse --foreground for SVG export (not HSL or recognized format), defaulting.", e);
         }
       }
@@ -203,18 +235,15 @@ export function exportToSVG(hatchPaths: HatchPath[], camera: THREE.PerspectiveCa
 
 function projectToScreen(vector3: THREE.Vector3, projectionMatrix: THREE.Matrix4, width: number, height: number): { x: number, y: number } {
     const projected = vector3.clone().applyMatrix4(projectionMatrix);
-    // Convert NDC to screen coordinates
-    // NDC range is -1 to 1 for x, y, z (if inside frustum)
-    // SVG origin is top-left for the <g> element's parent, but we transformed <g> to center with Y inverted.
-    // So, x from -width/2 to width/2, y from -height/2 to height/2 (after g transform)
     const x = projected.x * (width / 2);
-    const y = projected.y * (height / 2); // Y is already inverted by the <g> scale(1,-1)
+    const y = projected.y * (height / 2);
     return { x, y };
 }
 
 export function createObjectMeshes(objects: SceneObject[]): THREE.Mesh[] {
   return objects.map(obj => {
     let geometry: THREE.BufferGeometry;
+    // Use a distinct material for scene objects vs helpers for hatching/interaction logic if needed.
     const material = new THREE.MeshStandardMaterial({
       color: obj.color,
       side: THREE.DoubleSide, 
@@ -236,19 +265,19 @@ export function createObjectMeshes(objects: SceneObject[]): THREE.Mesh[] {
       case 'sphere':
         geometry = new THREE.SphereGeometry(
           obj.geometryParams.radius || 0.5,
-          obj.geometryParams.widthSegments || 32, // Increased segments for smoother sphere
-          obj.geometryParams.heightSegments || 16 // Increased segments for smoother sphere
+          obj.geometryParams.widthSegments || 32,
+          obj.geometryParams.heightSegments || 16
         );
         break;
       default:
-        geometry = new THREE.BoxGeometry(1, 1, 1); // Fallback
+        geometry = new THREE.BoxGeometry(1, 1, 1);
         console.warn(`Unknown object type "${obj.type}", defaulting to BoxGeometry.`);
     }
     const mesh = new THREE.Mesh(geometry, material);
     mesh.position.set(obj.position.x, obj.position.y, obj.position.z);
     mesh.rotation.set(obj.rotation.x, obj.rotation.y, obj.rotation.z);
     mesh.scale.set(obj.scale.x, obj.scale.y, obj.scale.z);
-    mesh.userData = { id: obj.id, type: obj.type }; // Store ID and type for potential filtering
+    mesh.userData = { id: obj.id, type: obj.type, isHelper: false }; // Mark as not a helper
     return mesh;
   });
 }
@@ -261,25 +290,32 @@ export function createLightSources(lights: SceneLight[]): Array<{light: THREE.Li
 
     switch (lightData.type) {
       case 'directional':
-        const dirLight = new THREE.DirectionalLight(lightColor, 0.8); // Intensity here is for scene lighting, not hatching density directly
+        const dirLight = new THREE.DirectionalLight(lightColor, 0.8); 
         dirLight.position.set(lightData.position.x, lightData.position.y, lightData.position.z);
         dirLight.target.position.set(lightData.target.x, lightData.target.y, lightData.target.z);
+        // dirLight.castShadow = true; // For potential future shadow mapping, not directly SVG hatching
         light = dirLight;
-        // Helper color should be distinct if scene light color is too dark/light for visibility
-        let helperColor = lightColor.clone().multiplyScalar(0.7);
-        if (helperColor.getHSL({h:0,s:0,l:0}).l < 0.1) helperColor.setHex(0xffffff); // if too dark, make white
-        helper = new THREE.DirectionalLightHelper(dirLight, 1, helperColor); 
+        
+        let helperColor = lightColor.clone().lerp(new THREE.Color(0xffffff), 0.5); // Make helper color lighter
+        if (helperColor.getHSL({h:0,s:0,l:0}).l < 0.2) helperColor.setHex(0x808080); // Ensure it's visible
+        if (helperColor.getHSL({h:0,s:0,l:0}).l > 0.8) helperColor.setHex(0x808080);
+
+        helper = new THREE.DirectionalLightHelper(dirLight, 0.5, helperColor); 
         break;
       default:
-        const ambient = new THREE.AmbientLight(0xffffff, 0.1); // Default fallback
+        const ambient = new THREE.AmbientLight(0xffffff, 0.1); 
         light = ambient;
         console.warn(`Unsupported or unknown light type "${lightData.type}", defaulting to AmbientLight.`);
     }
     light.userData = { 
         id: lightData.id, 
         hatchAngle: lightData.hatchAngle, 
-        originalIntensity: lightData.intensity // Store original intensity for hatching logic
+        originalIntensity: lightData.intensity,
+        isHelper: false
     }; 
+    if (helper) {
+        helper.userData = { isHelper: true }; // Mark helper itself as a helper object
+    }
     return {light, helper};
   });
 }
