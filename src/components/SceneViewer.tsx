@@ -292,82 +292,101 @@ const SceneViewer: React.FC = () => {
             // A more robust update would diff properties and update THREE.Mesh properties.
         }
     });
-
-
+    
     // --- Light Management ---
-    // Remove old lights and helpers not in current `lights` state
-    const currentLightIds = new Set(lights.map(l => l.id));
-    sceneRef.current.children.slice().forEach(child => {
-        if (child.userData.id && child.isLight && !currentLightIds.has(child.userData.id)) {
-            sceneRef.current!.remove(child);
-            if (child.target && child.target.parent === sceneRef.current) {
-                sceneRef.current!.remove(child.target);
-            }
-            const helper = lightHelpersRef.current.get(child.userData.id);
-            if (helper) {
-                sceneRef.current!.remove(helper);
-                helper.dispose();
-                lightHelpersRef.current.delete(child.userData.id);
-            }
+    // First, identify existing lights and their helpers
+    const existingLights = new Map();
+    sceneRef.current.traverse(child => {
+      if (child instanceof THREE.Light && child.userData && child.userData.id && !child.userData.isAmbientLight) {
+        existingLights.set(child.userData.id, { 
+          light: child, 
+          helper: lightHelpersRef.current.get(child.userData.id) 
+        });
+      }
+    });
+
+    // Remove lights that are no longer in the lights array
+    existingLights.forEach((value, id) => {
+      if (!lights.some(l => l.id === id)) {
+        sceneRef.current!.remove(value.light);
+        if (value.helper) {
+          sceneRef.current!.remove(value.helper);
+          lightHelpersRef.current.delete(id);
         }
+      }
+    });
+
+    // Add or update lights
+    const newLightSources = createLightSources(lights);
+    newLightSources.forEach(({ light, helper }, index) => {
+      const lightData = lights[index];
+      const existingLightAndHelper = existingLights.get(lightData.id);
+      
+      if (!existingLightAndHelper) {
+        // Add new light and helper
+        sceneRef.current!.add(light);
+        if (helper) {
+          sceneRef.current!.add(helper);
+          lightHelpersRef.current.set(lightData.id, helper);
+        }
+      } else {
+        // Update existing light
+        const existingLight = existingLightAndHelper.light;
+        const existingHelper = existingLightAndHelper.helper;
+        
+        if (existingLight instanceof THREE.DirectionalLight) {
+          existingLight.position.set(lightData.position.x, lightData.position.y, lightData.position.z);
+          existingLight.target.position.set(lightData.target.x, lightData.target.y, lightData.target.z);
+          existingLight.userData.hatchAngle = lightData.hatchAngle;
+          existingLight.userData.originalIntensity = lightData.intensity;
+
+          if (existingHelper) {
+            existingHelper.update(); // Update helper if light changes
+            if(existingHelper.parent !== sceneRef.current) { // If helper got detached somehow
+              sceneRef.current!.add(existingHelper);
+            }
+          } else { // If helper didn't exist but light did, create and add helper
+            const {helper: newHelperInstance} = createLightSources([lightData])[0];
+            if (newHelperInstance) {
+              sceneRef.current!.add(newHelperInstance);
+              lightHelpersRef.current.set(lightData.id, newHelperInstance);
+            }
+          }
+        }
+      }
     });
     
-    // Add new or update existing lights
-    lights.forEach(lightData => {
-        let existingLight = sceneRef.current!.getObjectByProperty('userData.id', lightData.id) as THREE.Light;
-        let existingHelper = lightHelpersRef.current.get(lightData.id);
-
-        if (!existingLight) {
-            const {light: newLight, helper: newHelper} = createLightSources([lightData])[0];
-            sceneRef.current!.add(newLight);
-            if (newLight.target && newLight.target instanceof THREE.Object3D) {
-                sceneRef.current!.add(newLight.target);
-            }
-            if (newHelper) {
-                sceneRef.current!.add(newHelper);
-                lightHelpersRef.current.set(newLight.userData.id, newHelper);
-            }
-        } else {
-            // Update existing light properties
-            existingLight.color.set(lightData.color);
-            // For directional lights
-            if (existingLight instanceof THREE.DirectionalLight) {
-                existingLight.position.set(lightData.position.x, lightData.position.y, lightData.position.z);
-                existingLight.target.position.set(lightData.target.x, lightData.target.y, lightData.target.z);
-            }
-            existingLight.userData.hatchAngle = lightData.hatchAngle;
-            existingLight.userData.originalIntensity = lightData.intensity;
-
-
-            if (existingHelper) {
-                existingHelper.update(); // Update helper if light changes
-                 if(existingHelper.parent !== sceneRef.current) { // If helper got detached somehow
-                    sceneRef.current!.add(existingHelper);
-                }
-            } else { // If helper didn't exist but light did, create and add helper
-                 const {helper: newHelperInstance} = createLightSources([lightData])[0];
-                 if (newHelperInstance) {
-                     sceneRef.current!.add(newHelperInstance);
-                     lightHelpersRef.current.set(lightData.id, newHelperInstance);
-                 }
-            }
-        }
+    // Handle ambient light separately - ensure exactly one exists
+    // First, find all ambient lights
+    const ambientLights = [];
+    sceneRef.current.traverse(child => {
+      if (child instanceof THREE.AmbientLight || (child.userData && child.userData.isAmbientLight)) {
+        ambientLights.push(child);
+      }
     });
     
-    // Ensure one ambient light for basic visibility
-    if (!sceneRef.current.children.some(l => l instanceof THREE.AmbientLight || l.userData.isAmbientLight)) {
-        const ambientLight = new THREE.AmbientLight(0xffffff, 0.2); // Dim ambient light
-        ambientLight.userData.isAmbientLight = true; 
-        sceneRef.current.add(ambientLight);
+    // Remove all ambient lights except the first one (if any exist)
+    if (ambientLights.length > 1) {
+      console.log(`Found ${ambientLights.length} ambient lights, removing extras`);
+      for (let i = 1; i < ambientLights.length; i++) {
+        sceneRef.current.remove(ambientLights[i]);
+      }
+    }
+    
+    // Add an ambient light if none exists
+    if (ambientLights.length === 0) {
+      console.log('Adding ambient light');
+      const ambientLight = new THREE.AmbientLight(0xffffff, 0.2); // Dim ambient light
+      ambientLight.userData.isAmbientLight = true; 
+      sceneRef.current.add(ambientLight);
     }
     
     setDirty(true); // Trigger hatch line regeneration
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [objects, lights]); // Re-run when objects or lights array references change
 
-
-   // Effect for generating and updating hatch lines
-   useEffect(() => {
+  // Effect for generating and updating hatch lines
+  useEffect(() => {
     if (isDirty && cameraRef.current && sceneRef.current) {
       console.log("Regenerating hatch lines...");
       if (objects.length > 0 && lights.length > 0) {
