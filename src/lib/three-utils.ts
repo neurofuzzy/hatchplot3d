@@ -296,6 +296,33 @@ export function createLightSources(lights: SceneLight[]): Array<{light: THREE.Li
         // dirLight.castShadow = true; // For potential future shadow mapping, not directly SVG hatching
         light = dirLight;
         
+        // Mark the light target for selection and manipulation
+        dirLight.target.userData = {
+          id: `${lightData.id}-target`,
+          parentLightId: lightData.id,
+          isLightTarget: true,
+          isHelper: false
+        };
+        
+        // Create a visual representation of the target
+        const targetMarker = new THREE.Mesh(
+          new THREE.SphereGeometry(0.1, 8, 8),
+          new THREE.MeshBasicMaterial({ 
+            color: lightColor,
+            transparent: true,
+            opacity: 0.5,
+            wireframe: true
+          })
+        );
+        targetMarker.position.copy(dirLight.target.position);
+        targetMarker.userData = { 
+          id: `${lightData.id}-target-visual`,
+          parentLightId: lightData.id,
+          isLightTarget: true,
+          isHelper: true
+        };
+        dirLight.target.add(targetMarker);
+        
         let helperColor = lightColor.clone().lerp(new THREE.Color(0xffffff), 0.5); // Make helper color lighter
         if (helperColor.getHSL({h:0,s:0,l:0}).l < 0.2) helperColor.setHex(0x808080); // Ensure it's visible
         if (helperColor.getHSL({h:0,s:0,l:0}).l > 0.8) helperColor.setHex(0x808080);
@@ -311,10 +338,15 @@ export function createLightSources(lights: SceneLight[]): Array<{light: THREE.Li
         id: lightData.id, 
         hatchAngle: lightData.hatchAngle, 
         originalIntensity: lightData.intensity,
+        isLight: true,
         isHelper: false
     }; 
     if (helper) {
-        helper.userData = { isHelper: true }; // Mark helper itself as a helper object
+        helper.userData = { 
+          id: `${lightData.id}-helper`,
+          parentLightId: lightData.id,
+          isHelper: true 
+        }; // Mark helper itself as a helper object
     }
     return {light, helper};
   });

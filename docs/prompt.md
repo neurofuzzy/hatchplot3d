@@ -1,6 +1,4 @@
-# Hatchplot3D
-
-A modern web app that allows you to create 3d scenes and project hatch lines onto objects in the scene. This is for use with an axidraw plotter that plots on black paper with a white pen. Since the pen is white, lines represent light areas. This includes a web-based 3d renderer that can take a scene and project hatch lines onto objects in the scene. The source of the projected lines will be a light source.
+Build me a modern web app. I have an Axidraw plotter that I want to plot 3d scenes with. I plot on black paper with a white pen. Since the pen is white, lines represent light areas. I want to create a web-based 3d renderer that can take a scene and project hatch lines onto objects in the scene. The source of the projected lines will be a light source.
 
 The algorithm for generating the path segments shall be:
 

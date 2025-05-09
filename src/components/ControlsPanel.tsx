@@ -12,8 +12,8 @@ import { Slider } from '@/components/ui/slider';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
 import { exportToSVG } from '@/lib/three-utils';
-import { Download, Lightbulb, Trash2, PlusCircle, RotateCcw, Sun } from 'lucide-react';
-import type { SceneLight, Vector3 } from '@/types';
+import { Download, Lightbulb, Trash2, PlusCircle, RotateCcw, Sun, Cube, Target, Box, Sphere } from 'lucide-react';
+import type { SceneLight, Vector3, SceneObject } from '@/types';
 import { useToast } from '@/hooks/use-toast';
 import {
   Accordion,
@@ -22,18 +22,47 @@ import {
   AccordionTrigger,
 } from "@/components/ui/accordion"
 import * as THREE from 'three';
+import { cn } from '@/lib/utils';
 
 
 const ControlsPanel: React.FC = () => {
-  const { lights, updateLight, addLight, removeLight, hatchLines, camera, objects, setDirty } = useScene();
+  const { 
+    lights, updateLight, addLight, removeLight, 
+    objects, updateObject, addObject, removeObject,
+    hatchLines, camera, setDirty 
+  } = useScene();
   const { toast } = useToast();
   const [isClient, setIsClient] = useState(false);
+  const [selectedEntityId, setSelectedEntityId] = useState<string | null>(null);
+  const [selectedEntityType, setSelectedEntityType] = useState<'object' | 'light' | 'lightTarget' | null>(null);
+  
+  // Track selected entity from SceneViewer
+  useEffect(() => {
+    const handleSelectionChange = (event: CustomEvent) => {
+      const { id, type } = event.detail;
+      setSelectedEntityId(id);
+      setSelectedEntityType(type);
+      
+      // Auto-expand the selected entity in the accordion
+      if (id) {
+        const accordionId = `${type}-${id}`;
+        document.getElementById(accordionId)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+    };
+    
+    window.addEventListener('entity-selected' as any, handleSelectionChange as EventListener);
+    
+    return () => {
+      window.removeEventListener('entity-selected' as any, handleSelectionChange as EventListener);
+    };
+  }, []);
 
   useEffect(() => {
     setIsClient(true);
   }, []);
 
 
+  // Light handlers
   const handleAddLight = () => {
     const newLight: Omit<SceneLight, 'id' | 'castShadow'> = {
       type: 'directional',
@@ -68,6 +97,80 @@ const ControlsPanel: React.FC = () => {
     if (light) {
       updateLight(id, { target: { ...light.target, [axis]: value } });
     }
+  };
+  
+  // Object handlers
+  const handleAddObject = (type: 'box' | 'sphere') => {
+    const baseObject: Omit<SceneObject, 'id' | 'type' | 'geometryParams'> = {
+      position: { x: Math.random() * 4 - 2, y: 0.5, z: Math.random() * 4 - 2 },
+      rotation: { x: 0, y: 0, z: 0 },
+      scale: { x: 1, y: 1, z: 1 },
+      color: `#${Math.floor(Math.random()*0xffffff).toString(16).padStart(6, '0')}`,
+    };
+    
+    if (type === 'box') {
+      addObject({
+        ...baseObject,
+        type: 'box',
+        geometryParams: { width: 1, height: 1, depth: 1 }
+      });
+    } else {
+      addObject({
+        ...baseObject,
+        type: 'sphere',
+        geometryParams: { radius: 0.5 }
+      });
+    }
+    
+    toast({ title: `${type.charAt(0).toUpperCase() + type.slice(1)} Added`, description: `A new ${type} has been added to the scene.` });
+  };
+  
+  const handleRemoveObject = (id: string) => {
+    removeObject(id);
+    toast({ title: "Object Removed", description: "The object has been removed from the scene.", variant: "destructive" });
+  };
+  
+  const handleObjectChange = (id: string, field: keyof SceneObject, value: any) => {
+    updateObject(id, { [field]: value });
+  };
+  
+  const handleObjectPositionChange = (id: string, axis: keyof Vector3, value: number) => {
+    const object = objects.find(o => o.id === id);
+    if (object) {
+      updateObject(id, { position: { ...object.position, [axis]: value } });
+    }
+  };
+  
+  const handleObjectRotationChange = (id: string, axis: keyof Vector3, value: number) => {
+    const object = objects.find(o => o.id === id);
+    if (object) {
+      updateObject(id, { rotation: { ...object.rotation, [axis]: value } });
+    }
+  };
+  
+  const handleObjectScaleChange = (id: string, axis: keyof Vector3, value: number) => {
+    const object = objects.find(o => o.id === id);
+    if (object) {
+      updateObject(id, { scale: { ...object.scale, [axis]: value } });
+    }
+  };
+  
+  const handleObjectGeometryChange = (id: string, param: string, value: number) => {
+    const object = objects.find(o => o.id === id);
+    if (object) {
+      updateObject(id, { 
+        geometryParams: { ...object.geometryParams, [param]: value } 
+      });
+    }
+  };
+  
+  // Helper to select an entity in the scene
+  const selectEntity = (id: string, type: 'object' | 'light' | 'lightTarget') => {
+    // Dispatch a custom event to notify SceneViewer to select this entity
+    const event = new CustomEvent('select-entity', {
+      detail: { id, type }
+    });
+    window.dispatchEvent(event);
   };
 
 

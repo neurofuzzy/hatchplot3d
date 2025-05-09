@@ -3,29 +3,92 @@
 'use client';
 
 import type { MutableRefObject} from 'react';
-import React, { useRef, useEffect, useCallback } from 'react';
+import React, { useRef, useEffect, useCallback, useState } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
 import { useScene } from '@/context/SceneContext';
 import { generateHatchLines, createObjectMeshes, createLightSources } from '@/lib/three-utils';
 import type { HatchPath } from '@/types';
 
 const SceneViewer: React.FC = () => {
   const mountRef = useRef<HTMLDivElement>(null);
-  const { camera: cameraState, objects, lights, hatchLines, setHatchLines, isDirty, setDirty, updateCamera } = useScene();
+  const { camera: cameraState, objects, lights, hatchLines, setHatchLines, isDirty, setDirty, updateCamera, updateObject, updateLight } = useScene();
   
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
   const sceneRef = useRef<THREE.Scene | null>(null);
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
   const controlsRef = useRef<OrbitControls | null>(null);
+  const transformControlsRef = useRef<TransformControls | null>(null);
   const hatchLinesGroupRef: MutableRefObject<THREE.Group | null> = useRef<THREE.Group | null>(null);
   const lightHelpersRef = useRef<Map<string, THREE.DirectionalLightHelper | THREE.SpotLightHelper | THREE.PointLightHelper>>(new Map());
   const objectMeshesRef = useRef<THREE.Mesh[]>([]); // Keep track of added object meshes
   const gridHelperRef = useRef<THREE.GridHelper | null>(null);
   const axesHelperRef = useRef<THREE.AxesHelper | null>(null);
   const animationFrameIdRef = useRef<number | null>(null);
+  const [selectedObject, setSelectedObject] = useState<THREE.Object3D | null>(null);
+  const [selectionType, setSelectionType] = useState<'object' | 'light' | 'lightTarget'>('object');
+  const [selectionOutline, setSelectionOutline] = useState<THREE.LineSegments | null>(null);
+  const [selectionInfo, setSelectionInfo] = useState<{id: string, name: string} | null>(null);
+  const [ghostMode, setGhostMode] = useState<boolean>(false);
 
 
+  // Create a selection outline for the currently selected object
+  const createSelectionOutline = useCallback((object: THREE.Object3D) => {
+    if (!sceneRef.current) return null;
+    
+    // Remove any existing outline
+    if (selectionOutline) {
+      sceneRef.current.remove(selectionOutline);
+      if (selectionOutline.geometry) selectionOutline.geometry.dispose();
+      if (selectionOutline.material instanceof THREE.Material) {
+        selectionOutline.material.dispose();
+      } else if (Array.isArray(selectionOutline.material)) {
+        selectionOutline.material.forEach(m => m.dispose());
+      }
+    }
+    
+    let geometry: THREE.BufferGeometry;
+    
+    if (object instanceof THREE.Mesh && object.geometry) {
+      // For meshes, create an outline based on the mesh geometry
+      const edgesGeometry = new THREE.EdgesGeometry(object.geometry);
+      geometry = edgesGeometry;
+    } else {
+      // For lights and other objects, create a box outline
+      const boxHelper = new THREE.BoxHelper(object);
+      boxHelper.update();
+      geometry = boxHelper.geometry;
+    }
+    
+    // Create a bright outline material
+    const material = new THREE.LineBasicMaterial({ 
+      color: 0x00ffff, // Cyan color for visibility
+      linewidth: 2,
+      transparent: true,
+      opacity: 0.8
+    });
+    
+    const outline = new THREE.LineSegments(geometry, material);
+    outline.position.copy(object.position);
+    outline.rotation.copy(object.rotation);
+    outline.scale.copy(object.scale);
+    outline.userData = { isHelper: true };
+    
+    sceneRef.current.add(outline);
+    return outline;
+  }, [selectionOutline]);
+  
+  // Update the position of the selection outline
+  const updateSelectionOutline = useCallback(() => {
+    if (!selectedObject || !selectionOutline || !sceneRef.current) return;
+    
+    selectionOutline.position.copy(selectedObject.position);
+    selectionOutline.rotation.copy(selectedObject.rotation);
+    selectionOutline.scale.copy(selectedObject.scale);
+    selectionOutline.updateMatrix();
+  }, [selectedObject, selectionOutline]);
+  
   const updateHatchVisuals = useCallback((paths: HatchPath[]) => {
     if (!sceneRef.current || !hatchLinesGroupRef.current) return;
 
@@ -111,16 +174,28 @@ const SceneViewer: React.FC = () => {
     hatchLinesGroupRef.current = new THREE.Group(); 
     scene.add(hatchLinesGroupRef.current);
 
+    // Create a more subtle grid helper
     const gridHelperColorCenter = new THREE.Color(`hsl(${getComputedStyle(document.documentElement).getPropertyValue('--muted-foreground').trim()})`);
     const gridHelperColorGrid = new THREE.Color(`hsl(${getComputedStyle(document.documentElement).getPropertyValue('--border').trim()})`);
-    const gridHelper = new THREE.GridHelper(10, 10, gridHelperColorCenter, gridHelperColorGrid); 
+    const gridHelper = new THREE.GridHelper(10, 10, gridHelperColorCenter, gridHelperColorGrid);
+    
+    // Make the grid more transparent
+    if (gridHelper.material instanceof THREE.Material) {
+      gridHelper.material.transparent = true;
+      gridHelper.material.opacity = 0.2;
+    } else if (Array.isArray(gridHelper.material)) {
+      gridHelper.material.forEach(mat => {
+        mat.transparent = true;
+        mat.opacity = 0.2;
+      });
+    }
+    
     scene.add(gridHelper);
     gridHelperRef.current = gridHelper;
 
     const axesHelper = new THREE.AxesHelper(2); 
     scene.add(axesHelper);
     axesHelperRef.current = axesHelper;
-
 
     const camera = new THREE.PerspectiveCamera(
       cameraState.fov,
@@ -150,6 +225,58 @@ const SceneViewer: React.FC = () => {
     };
     controls.addEventListener('change', onControlsChange);
     controlsRef.current = controls;
+    
+    // Setup transform controls
+    const transformControls = new TransformControls(camera, renderer.domElement);
+    transformControls.addEventListener('dragging-changed', (event) => {
+      // Disable orbit controls while using transform controls
+      controls.enabled = !event.value;
+      
+      // If we've finished dragging, update the object position in the context
+      if (!event.value && transformControls.object) {
+        const object = transformControls.object;
+        const objectId = object.userData.id;
+        const position = object.position;
+        
+        if (selectionType === 'object') {
+          // Update scene object
+          const rotation = object.rotation;
+          const scale = object.scale;
+          
+          updateObject(objectId, {
+            position: { x: position.x, y: position.y, z: position.z },
+            rotation: { x: rotation.x, y: rotation.y, z: rotation.z },
+            scale: { x: scale.x, y: scale.y, z: scale.z }
+          });
+        } 
+        else if (selectionType === 'light') {
+          // Update light position
+          updateLight(objectId, {
+            position: { x: position.x, y: position.y, z: position.z }
+          });
+        } 
+        else if (selectionType === 'lightTarget') {
+          // Update light target
+          // The userData.parentLightId contains the ID of the parent light
+          const parentLightId = object.userData.parentLightId;
+          if (parentLightId) {
+            updateLight(parentLightId, {
+              target: { x: position.x, y: position.y, z: position.z }
+            });
+          }
+        }
+        
+        // Update selection outline position
+        updateSelectionOutline();
+        
+        // Mark the scene as dirty to regenerate hatching
+        setDirty(true);
+      }
+    });
+    
+    // Add transform controls to the scene
+    scene.add(transformControls);
+    transformControlsRef.current = transformControls;
 
     const handleResize = () => {
       if (mountRef.current && rendererRef.current && cameraRef.current) {
@@ -450,7 +577,382 @@ const SceneViewer: React.FC = () => {
   }, [cameraState]);
 
 
-  return <div ref={mountRef} className="w-full h-full absolute top-0 left-0" />;
+  // Find a light in the scene by proximity to a point
+  const findLightByProximity = useCallback((point: THREE.Vector3, maxDistance: number = 0.5): THREE.Light | null => {
+    if (!sceneRef.current) return null;
+    
+    let closestLight: THREE.Light | null = null;
+    let closestDistance = maxDistance;
+    
+    // Find all lights in the scene
+    sceneRef.current.traverse(object => {
+      if (object instanceof THREE.Light && object.userData && object.userData.isLight) {
+        const distance = point.distanceTo(object.position);
+        if (distance < closestDistance) {
+          closestDistance = distance;
+          closestLight = object;
+        }
+      }
+    });
+    
+    return closestLight;
+  }, [sceneRef]);
+  
+  // Setup object selection with raycaster
+  useEffect(() => {
+    if (!mountRef.current || !sceneRef.current || !cameraRef.current) return;
+    
+    const raycaster = new THREE.Raycaster();
+    raycaster.params.Line = { threshold: 0.2 }; // Make it easier to select lines
+    const mouse = new THREE.Vector2();
+    
+    const handleMouseClick = (event: MouseEvent) => {
+      // Calculate mouse position in normalized device coordinates
+      const rect = mountRef.current!.getBoundingClientRect();
+      mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+      mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+      
+      // Update the picking ray with the camera and mouse position
+      raycaster.setFromCamera(mouse, cameraRef.current!);
+      
+      // First try to find lights by checking if the ray passes near any light position
+      // This is needed because lights don't have geometry to intersect with
+      const ray = raycaster.ray;
+      const lightHelpers = [];
+      
+      // Collect all light helpers for special handling
+      sceneRef.current!.traverse(object => {
+        if (object.userData && (object.userData.isLightHelper || 
+            (object.userData.parentLightId && object.type === 'LineSegments'))) {
+          lightHelpers.push(object);
+        }
+      });
+      
+      // Check for intersections with light helpers first
+      const helperIntersects = raycaster.intersectObjects(lightHelpers, true);
+      if (helperIntersects.length > 0) {
+        const helper = helperIntersects[0].object;
+        const parentLightId = helper.userData.parentLightId;
+        
+        // Find the parent light
+        let parentLight: THREE.Object3D | null = null;
+        sceneRef.current!.traverse(object => {
+          if (object.userData && object.userData.id === parentLightId) {
+            parentLight = object;
+          }
+        });
+        
+        if (parentLight) {
+          // Select the light
+          if (transformControlsRef.current) {
+            transformControlsRef.current.detach();
+            transformControlsRef.current.attach(parentLight);
+            setSelectedObject(parentLight);
+            setSelectionType('light');
+            setSelectionInfo({
+              id: parentLightId,
+              name: `Light (${parentLightId.split('-')[0]})`
+            });
+            
+            // Create selection outline
+            const outline = createSelectionOutline(parentLight);
+            setSelectionOutline(outline);
+            return;
+          }
+        }
+      }
+      
+      // Find intersections with all objects in the scene
+      const intersects = raycaster.intersectObjects(sceneRef.current!.children, true);
+      
+      // Filter out helper objects
+      const validIntersects = intersects.filter(intersect => {
+        return intersect.object.userData && 
+               intersect.object.userData.id && 
+               !intersect.object.userData.isHelper;
+      });
+      
+      if (validIntersects.length > 0) {
+        const hitObject = validIntersects[0].object;
+        let objectToSelect: THREE.Object3D | null = null;
+        let objectType: 'object' | 'light' | 'lightTarget' = 'object';
+        let objectInfo = { id: '', name: '' };
+        
+        // Determine what kind of object we hit
+        if (hitObject instanceof THREE.DirectionalLight || 
+            hitObject.userData.isLight || 
+            (hitObject.parent && hitObject.parent.userData && hitObject.parent.userData.isLight)) {
+          // We hit a light or a light helper
+          const lightObj = hitObject instanceof THREE.DirectionalLight ? 
+                          hitObject : 
+                          (hitObject.parent && hitObject.parent.userData && hitObject.parent.userData.isLight ? 
+                           hitObject.parent : hitObject);
+          
+          objectToSelect = lightObj;
+          objectType = 'light';
+          objectInfo = { 
+            id: lightObj.userData.id, 
+            name: `Light (${lightObj.userData.id.split('-')[0]})` 
+          };
+        } 
+        else if (hitObject.userData.isLightTarget || 
+                (hitObject.parent && hitObject.parent.userData && hitObject.parent.userData.isLightTarget)) {
+          // We hit a light target
+          const targetObj = hitObject.userData.isLightTarget ? 
+                           hitObject : 
+                           hitObject.parent;
+          
+          objectToSelect = targetObj;
+          objectType = 'lightTarget';
+          objectInfo = { 
+            id: targetObj.userData.parentLightId, 
+            name: `Light Target (${targetObj.userData.parentLightId.split('-')[0]})` 
+          };
+        }
+        else {
+          // We hit a regular scene object
+          objectToSelect = hitObject;
+          objectType = 'object';
+          objectInfo = { 
+            id: hitObject.userData.id, 
+            name: `${hitObject.userData.type || 'Object'} (${hitObject.userData.id.split('-')[0]})` 
+          };
+        }
+        
+        // Attach transform controls to the selected object
+        if (transformControlsRef.current && objectToSelect) {
+          transformControlsRef.current.detach(); // Detach from any previous object
+          transformControlsRef.current.attach(objectToSelect);
+          setSelectedObject(objectToSelect);
+          setSelectionType(objectType);
+          setSelectionInfo(objectInfo);
+          
+          // Create selection outline
+          const outline = createSelectionOutline(objectToSelect);
+          setSelectionOutline(outline);
+        }
+      } else {
+        // Try to find a light by proximity to the ray
+        const rayPoint = ray.at(5, new THREE.Vector3()); // Get a point 5 units along the ray
+        const nearbyLight = findLightByProximity(rayPoint, 0.5);
+        
+        if (nearbyLight) {
+          // We found a light near the ray
+          if (transformControlsRef.current) {
+            transformControlsRef.current.detach();
+            transformControlsRef.current.attach(nearbyLight);
+            setSelectedObject(nearbyLight);
+            setSelectionType('light');
+            setSelectionInfo({
+              id: nearbyLight.userData.id,
+              name: `Light (${nearbyLight.userData.id.split('-')[0]})`
+            });
+            
+            // Create selection outline
+            const outline = createSelectionOutline(nearbyLight);
+            setSelectionOutline(outline);
+          }
+        } else {
+          // Clicked on empty space, detach transform controls
+          if (transformControlsRef.current) {
+            transformControlsRef.current.detach();
+            setSelectedObject(null);
+            setSelectionType('object');
+            setSelectionInfo(null);
+            
+            // Remove selection outline
+            if (selectionOutline && sceneRef.current) {
+              sceneRef.current.remove(selectionOutline);
+              if (selectionOutline.geometry) selectionOutline.geometry.dispose();
+              if (selectionOutline.material instanceof THREE.Material) {
+                selectionOutline.material.dispose();
+              }
+              setSelectionOutline(null);
+            }
+          }
+        }
+      }
+    };
+    
+    // Add click event listener
+    mountRef.current.addEventListener('click', handleMouseClick);
+    
+    // Cleanup
+    return () => {
+      if (mountRef.current) {
+        mountRef.current.removeEventListener('click', handleMouseClick);
+      }
+    };
+  }, [createSelectionOutline, selectionOutline, findLightByProximity]);
+  
+  // Add keyboard shortcuts for transform controls and ghost mode
+  useEffect(() => {
+    if (!transformControlsRef.current) return;
+    
+    const handleKeyDown = (event: KeyboardEvent) => {
+      // Transform controls shortcuts
+      if (selectedObject && transformControlsRef.current) {
+        switch (event.key.toLowerCase()) {
+          case 't': // Translate mode
+            transformControlsRef.current.setMode('translate');
+            break;
+          case 'r': // Rotate mode
+            transformControlsRef.current.setMode('rotate');
+            break;
+          case 's': // Scale mode
+            transformControlsRef.current.setMode('scale');
+            break;
+        }
+      }
+      
+      // Ghost mode toggle with 'G' key
+      if (event.key.toLowerCase() === 'g') {
+        toggleGhostMode();
+      }
+    };
+    
+    window.addEventListener('keydown', handleKeyDown);
+    
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [selectedObject]);
+  
+  // Toggle ghost mode (transparent objects)
+  const toggleGhostMode = useCallback(() => {
+    setGhostMode(prev => {
+      const newGhostMode = !prev;
+      
+      // Update all object materials
+      if (sceneRef.current) {
+        sceneRef.current.traverse(object => {
+          if (object instanceof THREE.Mesh && !object.userData.isHelper) {
+            if (object.material instanceof THREE.Material) {
+              object.material.transparent = newGhostMode;
+              object.material.opacity = newGhostMode ? 0.3 : 1.0;
+              object.material.depthWrite = !newGhostMode;
+              object.material.needsUpdate = true;
+            } else if (Array.isArray(object.material)) {
+              object.material.forEach(mat => {
+                mat.transparent = newGhostMode;
+                mat.opacity = newGhostMode ? 0.3 : 1.0;
+                mat.depthWrite = !newGhostMode;
+                mat.needsUpdate = true;
+              });
+            }
+          }
+        });
+      }
+      
+      return newGhostMode;
+    });
+  }, [sceneRef]);
+  
+  // Function to toggle between light and light target when a light is selected
+  const toggleLightTargetSelection = useCallback(() => {
+    if (!selectedObject || !sceneRef.current || !transformControlsRef.current) return;
+    
+    if (selectionType === 'light') {
+      // Find the light target
+      const light = selectedObject as THREE.DirectionalLight;
+      if (light.target) {
+        // Switch to the target
+        transformControlsRef.current.detach();
+        transformControlsRef.current.attach(light.target);
+        setSelectedObject(light.target);
+        setSelectionType('lightTarget');
+        setSelectionInfo({
+          id: light.userData.id,
+          name: `Light Target (${light.userData.id.split('-')[0]})`
+        });
+        
+        // Update selection outline
+        const outline = createSelectionOutline(light.target);
+        setSelectionOutline(outline);
+      }
+    } 
+    else if (selectionType === 'lightTarget') {
+      // Find the parent light
+      const target = selectedObject;
+      const parentLightId = target.userData.parentLightId;
+      
+      if (parentLightId) {
+        // Find the parent light in the scene
+        let parentLight: THREE.Object3D | null = null;
+        sceneRef.current.traverse((object) => {
+          if (object.userData && object.userData.id === parentLightId) {
+            parentLight = object;
+          }
+        });
+        
+        if (parentLight) {
+          // Switch to the light
+          transformControlsRef.current.detach();
+          transformControlsRef.current.attach(parentLight);
+          setSelectedObject(parentLight);
+          setSelectionType('light');
+          setSelectionInfo({
+            id: parentLightId,
+            name: `Light (${parentLightId.split('-')[0]})`
+          });
+          
+          // Update selection outline
+          const outline = createSelectionOutline(parentLight);
+          setSelectionOutline(outline);
+        }
+      }
+    }
+  }, [selectedObject, selectionType, createSelectionOutline, sceneRef]);
+  
+  return (
+    <div className="relative w-full h-full">
+      <div ref={mountRef} className="w-full h-full absolute top-0 left-0" />
+      
+      {/* Controls UI */}
+      <div className="absolute top-4 right-4 flex flex-col gap-2 z-10">
+        {/* Ghost Mode Toggle */}
+        <div className="bg-background/80 backdrop-blur-sm border rounded-md p-2 shadow-md">
+          <button 
+            onClick={toggleGhostMode}
+            className={`text-xs px-2 py-1 rounded transition-colors flex items-center gap-1 ${ghostMode ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground'}`}
+            title="Toggle Ghost Mode (G)"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M9 3H5a2 2 0 0 0-2 2v4m6-6h10a2 2 0 0 1 2 2v4M9 3v18m0 0h10a2 2 0 0 0 2-2V9M9 21H5a2 2 0 0 1-2-2V9m0 0h18" />
+            </svg>
+            {ghostMode ? 'Ghost Mode On' : 'Ghost Mode Off'}
+          </button>
+        </div>
+        
+        {/* Selection Info UI */}
+        {selectionInfo && (
+          <div className="bg-background/80 backdrop-blur-sm border rounded-md p-2 shadow-md flex flex-col gap-2">
+            <div className="flex items-center gap-2">
+              <div className="w-3 h-3 rounded-full bg-cyan-400" />
+              <span className="text-sm font-medium">{selectionInfo.name}</span>
+            </div>
+            
+            {/* Transform mode indicators */}
+            <div className="flex gap-1 text-xs">
+              <span className="px-1 py-0.5 rounded bg-muted">T: Translate</span>
+              <span className="px-1 py-0.5 rounded bg-muted">R: Rotate</span>
+              <span className="px-1 py-0.5 rounded bg-muted">S: Scale</span>
+            </div>
+            
+            {/* Toggle button for lights */}
+            {(selectionType === 'light' || selectionType === 'lightTarget') && (
+              <button 
+                onClick={toggleLightTargetSelection}
+                className="text-xs px-2 py-1 bg-primary text-primary-foreground rounded hover:bg-primary/90 transition-colors"
+              >
+                {selectionType === 'light' ? 'Edit Target' : 'Edit Light'}
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
 };
 
 export default SceneViewer;
