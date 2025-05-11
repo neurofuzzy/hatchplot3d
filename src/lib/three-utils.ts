@@ -108,7 +108,21 @@ export function generateHatchLines(
           const triNormal = new THREE.Vector3();
           tri.getNormal(triNormal);
 
-          if (triNormal.dot(lightDirection) > -0.001) { 
+          const rawDotNL = triNormal.dot(lightDirection);
+          if (rawDotNL > -0.001) {
+            return;
+          }
+
+          const dotNL = -rawDotNL;
+          let requiredFaceAlignment = 0.0;
+
+          if (i % 2 === 0) {
+            requiredFaceAlignment = 0.50;
+          } else {
+            requiredFaceAlignment = 0.1;
+          }
+
+          if (dotNL < requiredFaceAlignment) {
             return;
           }
 
