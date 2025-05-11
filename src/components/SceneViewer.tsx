@@ -237,27 +237,29 @@ const SceneViewer: React.FC = () => {
         const object = transformControls.object;
         const objectId = object.userData.id;
         const position = object.position;
-        
-        if (selectionType === 'object') {
-          // Update scene object
+
+        let currentObjectType: 'object' | 'light' | 'lightTarget' | 'unknown' = 'unknown';
+        if (object.userData.isLight) {
+          currentObjectType = 'light';
+        } else if (object.userData.isLightTarget) {
+          currentObjectType = 'lightTarget';
+        } else if (objects.some(o => o.id === objectId)) { // 'objects' is from useScene()
+          currentObjectType = 'object';
+        }
+
+        if (currentObjectType === 'object') {
           const rotation = object.rotation;
           const scale = object.scale;
-          
           updateObject(objectId, {
             position: { x: position.x, y: position.y, z: position.z },
             rotation: { x: rotation.x, y: rotation.y, z: rotation.z },
             scale: { x: scale.x, y: scale.y, z: scale.z }
           });
-        } 
-        else if (selectionType === 'light') {
-          // Update light position
+        } else if (currentObjectType === 'light') {
           updateLight(objectId, {
             position: { x: position.x, y: position.y, z: position.z }
           });
-        } 
-        else if (selectionType === 'lightTarget') {
-          // Update light target
-          // The userData.parentLightId contains the ID of the parent light
+        } else if (currentObjectType === 'lightTarget') {
           const parentLightId = object.userData.parentLightId;
           if (parentLightId) {
             updateLight(parentLightId, {
