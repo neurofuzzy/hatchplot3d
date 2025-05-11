@@ -1,11 +1,169 @@
-
 import * as THREE from 'three';
 import type { HatchPath, SceneLight, SceneObject, HatchLineSegment } from '@/types';
+function generateHatchLinesForDirectionalLight(
+  light: SceneLight,
+  lightDirection: THREE.Vector3,
+  objectMeshes: THREE.Mesh[],
+  sceneBoundingBox: THREE.Box3
+): HatchPath[] {
+  const generatedPaths: HatchPath[] = [];
+
+  if (sceneBoundingBox.isEmpty()) return [];
+
+  const planePoint = sceneBoundingBox.getCenter(new THREE.Vector3());
+  const hatchBasePlane = new THREE.Plane().setFromNormalAndCoplanarPoint(lightDirection, planePoint);
+
+  let hatchLineDirectionOnPlane = new THREE.Vector3(1, 0, 0);
+  if (Math.abs(hatchLineDirectionOnPlane.dot(lightDirection)) > 0.99) {
+      hatchLineDirectionOnPlane.set(0, 1, 0);
+  }
+  hatchLineDirectionOnPlane.projectOnPlane(lightDirection).normalize();
+  if (hatchLineDirectionOnPlane.lengthSq() < 0.1) {
+      hatchLineDirectionOnPlane.set(0,0,1);
+      hatchLineDirectionOnPlane.projectOnPlane(lightDirection).normalize();
+      if (hatchLineDirectionOnPlane.lengthSq() < 0.1) return [];
+  }
+  hatchLineDirectionOnPlane.applyAxisAngle(lightDirection, THREE.MathUtils.degToRad(light.hatchAngle));
+
+  const scanDirection = new THREE.Vector3().crossVectors(hatchLineDirectionOnPlane, lightDirection).normalize();
+   if (scanDirection.lengthSq() < 0.1) return [];
+
+  let minScan = Infinity, maxScan = -Infinity;
+  objectMeshes.forEach(mesh => {
+    if (mesh.userData.isHelper) return;
+    const geom = mesh.geometry;
+    const posAttr = geom.attributes.position;
+    const tempVertex = new THREE.Vector3();
+    for (let i = 0; i < posAttr.count; i++) {
+      tempVertex.fromBufferAttribute(posAttr, i);
+      const vWorld = tempVertex.clone().applyMatrix4(mesh.matrixWorld);
+      const vProjectedOnPlane = hatchBasePlane.projectPoint(vWorld, new THREE.Vector3());
+      const scanVal = vProjectedOnPlane.dot(scanDirection);
+      minScan = Math.min(minScan, scanVal);
+      maxScan = Math.max(maxScan, scanVal);
+    }
+  });
+  
+  if (minScan === Infinity || maxScan === -Infinity || (maxScan - minScan) < 0.001) return [];
+
+  const scanRange = maxScan - minScan;
+  const numHatchLines = Math.max(1, Math.floor(light.intensity * scanRange * 20)); // Doubled density factor
+  const lineSpacing = scanRange / (numHatchLines + 1);
+
+  for (let i = 1; i <= numHatchLines; i++) { // Master hatch line index (i)
+    const scanOffset = minScan + i * lineSpacing;
+    const masterLinePoint = planePoint.clone().addScaledVector(scanDirection, scanOffset - planePoint.dot(scanDirection));
+
+    const hatchCuttingPlaneNormal = new THREE.Vector3().crossVectors(hatchLineDirectionOnPlane, lightDirection).normalize();
+    if (hatchCuttingPlaneNormal.lengthSq() < 0.1) continue;
+    const hatchCuttingPlane = new THREE.Plane().setFromNormalAndCoplanarPoint(hatchCuttingPlaneNormal, masterLinePoint);
+    
+    const segmentsForThisMasterLine: HatchLineSegment[] = [];
+
+    objectMeshes.forEach(mesh => {
+      if (mesh.userData.isHelper) return;
+
+      const geometry = mesh.geometry;
+      const positionAttribute = geometry.attributes.position;
+      const worldMatrix = mesh.matrixWorld;
+
+      const vertices: THREE.Vector3[] = [];
+      const tempVertex = new THREE.Vector3();
+      for (let j = 0; j < positionAttribute.count; j++) {
+        tempVertex.fromBufferAttribute(positionAttribute, j);
+        vertices.push(tempVertex.clone());
+      }
+
+      const processTriangle = (vA_local: THREE.Vector3, vB_local: THREE.Vector3, vC_local: THREE.Vector3) => {
+        const vA_world = vA_local.clone().applyMatrix4(worldMatrix);
+        const vB_world = vB_local.clone().applyMatrix4(worldMatrix);
+        const vC_world = vC_local.clone().applyMatrix4(worldMatrix);
+
+        const tri = new THREE.Triangle(vA_world, vB_world, vC_world);
+        const triNormal = new THREE.Vector3();
+        tri.getNormal(triNormal);
+
+        const rawDotNL = triNormal.dot(lightDirection);
+        if (rawDotNL > -0.001) {
+          return;
+        }
+
+        const dotNL = -rawDotNL;
+        let requiredFaceAlignment = 0.0;
+
+        if (i % 2 === 0) { // `i` is the master hatch line index from the outer loop
+          requiredFaceAlignment = 0.50; 
+        } else {
+          requiredFaceAlignment = 0.1;
+        }
+
+        if (dotNL < requiredFaceAlignment) {
+          return;
+        }
+
+        const intersectionPoints: THREE.Vector3[] = [];
+        const edges = [
+          new THREE.Line3(vA_world, vB_world),
+          new THREE.Line3(vB_world, vC_world),
+          new THREE.Line3(vC_world, vA_world),
+        ];
+
+        edges.forEach(edge => {
+          const intersectPt = new THREE.Vector3();
+          if (hatchCuttingPlane.intersectLine(edge, intersectPt)) {
+            if (!intersectionPoints.some(p => p.distanceToSquared(intersectPt) < 0.000001)) {
+              intersectionPoints.push(intersectPt.clone());
+            }
+          }
+        });
+        
+        if (intersectionPoints.length === 2) {
+          const p1 = intersectionPoints[0];
+          const p2 = intersectionPoints[1];
+          if (p1.distanceToSquared(p2) > 0.00001) {
+            segmentsForThisMasterLine.push({
+              start: { x: p1.x, y: p1.y, z: p1.z },
+              end: { x: p2.x, y: p2.y, z: p2.z },
+            });
+          }
+        } else if (intersectionPoints.length > 2) {
+          intersectionPoints.sort((a, b) => {
+            return a.dot(hatchLineDirectionOnPlane) - b.dot(hatchLineDirectionOnPlane);
+          });
+          const p_start = intersectionPoints[0];
+          const p_end = intersectionPoints[intersectionPoints.length - 1];
+          if (p_start.distanceToSquared(p_end) > 0.00001) {
+            segmentsForThisMasterLine.push({
+              start: { x: p_start.x, y: p_start.y, z: p_start.z },
+              end: { x: p_end.x, y: p_end.y, z: p_end.z },
+            });
+          }
+        }
+      };
+
+      const indices = geometry.index;
+      if (indices) {
+        for (let k = 0; k < indices.count; k += 3) {
+          processTriangle(vertices[indices.getX(k)], vertices[indices.getX(k + 1)], vertices[indices.getX(k + 2)]);
+        }
+      } else {
+        for (let k = 0; k < vertices.length; k += 3) {
+          processTriangle(vertices[k], vertices[k + 1], vertices[k + 2]);
+        }
+      }
+    });
+
+    segmentsForThisMasterLine.forEach(segment => {
+      generatedPaths.push([segment]);
+    });
+  }
+  return generatedPaths;
+}
 
 export function generateHatchLines(
   objectMeshes: THREE.Mesh[],
   lights: SceneLight[],
-  _camera: THREE.PerspectiveCamera | THREE.OrthographicCamera // Camera currently unused for generation logic
+  _camera: THREE.PerspectiveCamera | THREE.OrthographicCamera
 ): HatchPath[] {
   const allHatchPaths: HatchPath[] = [];
 
@@ -14,115 +172,127 @@ export function generateHatchLines(
   }
 
   objectMeshes.forEach(mesh => {
-    if (mesh.userData.isHelper) return; // Skip helper objects like grid/axes
-    mesh.updateMatrixWorld(true); // Ensure matrices are up-to-date
+    if (mesh.userData.isHelper) return;
+    mesh.updateMatrixWorld(true);
   });
 
-
   lights.forEach((light) => {
-    if (light.type !== 'directional') return;
-
     const lightPosition = new THREE.Vector3(light.position.x, light.position.y, light.position.z);
     const lightTarget = new THREE.Vector3(light.target.x, light.target.y, light.target.z);
     const lightDirection = new THREE.Vector3().subVectors(lightTarget, lightPosition).normalize();
 
-    const sceneBoundingBox = new THREE.Box3();
-    objectMeshes.forEach(mesh => {
-      if (mesh.userData.isHelper) return;
-      sceneBoundingBox.expandByObject(mesh);
-    });
-
-    if (sceneBoundingBox.isEmpty()) return;
-
-    const planePoint = sceneBoundingBox.getCenter(new THREE.Vector3());
-    const hatchBasePlane = new THREE.Plane().setFromNormalAndCoplanarPoint(lightDirection, planePoint);
-
-    let hatchLineDirectionOnPlane = new THREE.Vector3(1, 0, 0);
-    if (Math.abs(hatchLineDirectionOnPlane.dot(lightDirection)) > 0.99) {
-        hatchLineDirectionOnPlane.set(0, 1, 0);
-    }
-    hatchLineDirectionOnPlane.projectOnPlane(lightDirection).normalize();
-    if (hatchLineDirectionOnPlane.lengthSq() < 0.1) {
-        hatchLineDirectionOnPlane.set(0,0,1);
-        hatchLineDirectionOnPlane.projectOnPlane(lightDirection).normalize();
-        if (hatchLineDirectionOnPlane.lengthSq() < 0.1) return;
-    }
-    hatchLineDirectionOnPlane.applyAxisAngle(lightDirection, THREE.MathUtils.degToRad(light.hatchAngle));
-
-    const scanDirection = new THREE.Vector3().crossVectors(hatchLineDirectionOnPlane, lightDirection).normalize();
-     if (scanDirection.lengthSq() < 0.1) return;
-
-
-    let minScan = Infinity, maxScan = -Infinity;
-    objectMeshes.forEach(mesh => {
-      if (mesh.userData.isHelper) return;
-      const geom = mesh.geometry;
-      const posAttr = geom.attributes.position;
-      const tempVertex = new THREE.Vector3();
-      for (let i = 0; i < posAttr.count; i++) {
-        tempVertex.fromBufferAttribute(posAttr, i);
-        const vWorld = tempVertex.clone().applyMatrix4(mesh.matrixWorld);
-        const vProjectedOnPlane = hatchBasePlane.projectPoint(vWorld, new THREE.Vector3());
-        const scanVal = vProjectedOnPlane.dot(scanDirection);
-        minScan = Math.min(minScan, scanVal);
-        maxScan = Math.max(maxScan, scanVal);
-      }
-    });
-    
-    if (minScan === Infinity || maxScan === -Infinity || (maxScan - minScan) < 0.001) return;
-
-    const scanRange = maxScan - minScan;
-    const numHatchLines = Math.max(1, Math.floor(light.intensity * scanRange * 10)); // Increased density factor
-    const lineSpacing = scanRange / (numHatchLines + 1);
-
-    for (let i = 1; i <= numHatchLines; i++) {
-      const scanOffset = minScan + i * lineSpacing;
-      const masterLinePoint = planePoint.clone().addScaledVector(scanDirection, scanOffset - planePoint.dot(scanDirection));
-
-      const hatchCuttingPlaneNormal = new THREE.Vector3().crossVectors(hatchLineDirectionOnPlane, lightDirection).normalize();
-      if (hatchCuttingPlaneNormal.lengthSq() < 0.1) continue;
-      const hatchCuttingPlane = new THREE.Plane().setFromNormalAndCoplanarPoint(hatchCuttingPlaneNormal, masterLinePoint);
-      
-      const segmentsForThisMasterLine: HatchLineSegment[] = [];
-
+    if (light.type === 'directional') {
+      const sceneBoundingBox = new THREE.Box3();
       objectMeshes.forEach(mesh => {
-        if (mesh.userData.isHelper) return; // Ensure we don't try to hatch helper objects
+        if (mesh.userData.isHelper) return;
+        sceneBoundingBox.expandByObject(mesh);
+      });
+      const directionalPaths = generateHatchLinesForDirectionalLight(
+        light,
+        lightDirection,
+        objectMeshes,
+        sceneBoundingBox
+      );
+      allHatchPaths.push(...directionalPaths);
+    } else if (light.type === 'spotlight') {
+      const spotAngleRad = THREE.MathUtils.degToRad(light.spotAngle || 45); // Default to 45 degrees if not set
+      const nearDist = 0.1; // Define a near plane distance
 
-        const geometry = mesh.geometry;
-        const positionAttribute = geometry.attributes.position;
-        const worldMatrix = mesh.matrixWorld;
+      const nearPlaneCenter = lightPosition.clone().addScaledVector(lightDirection, nearDist);
+      const spotlightNearPlane = new THREE.Plane().setFromNormalAndCoplanarPoint(lightDirection, nearPlaneCenter);
 
-        const vertices: THREE.Vector3[] = [];
-        const tempVertex = new THREE.Vector3();
-        for (let j = 0; j < positionAttribute.count; j++) {
-          tempVertex.fromBufferAttribute(positionAttribute, j);
-          vertices.push(tempVertex.clone());
+      // Determine hatch line orientation on the near plane
+      let hatchLineDirectionOnNearPlane = new THREE.Vector3(1, 0, 0);
+      if (Math.abs(hatchLineDirectionOnNearPlane.dot(lightDirection)) > 0.99) {
+        hatchLineDirectionOnNearPlane.set(0, 1, 0);
+      }
+      hatchLineDirectionOnNearPlane.projectOnPlane(lightDirection).normalize();
+      if (hatchLineDirectionOnNearPlane.lengthSq() < 0.1) {
+        hatchLineDirectionOnNearPlane.set(0,0,1);
+        hatchLineDirectionOnNearPlane.projectOnPlane(lightDirection).normalize();
+        if (hatchLineDirectionOnNearPlane.lengthSq() < 0.1) {
+            console.warn("Could not determine hatch line direction for spotlight.");
+            return [];
+        }
+      }
+      hatchLineDirectionOnNearPlane.applyAxisAngle(lightDirection, THREE.MathUtils.degToRad(light.hatchAngle));
+
+      const scanDirectionOnNearPlane = new THREE.Vector3().crossVectors(hatchLineDirectionOnNearPlane, lightDirection).normalize();
+      if (scanDirectionOnNearPlane.lengthSq() < 0.1) {
+        console.warn("Could not determine scan direction for spotlight.");
+        return [];
+      }
+      
+      const radiusOnNearPlane = nearDist * Math.tan(spotAngleRad);
+      const numHatchLines = Math.max(1, Math.floor(light.intensity * radiusOnNearPlane * 2 * 10)); // Density factor, similar to directional
+      const lineSpacing = (2 * radiusOnNearPlane) / (numHatchLines + 1);
+
+      const spotlightHatchPaths: HatchPath[] = [];
+      const finalSpotlightPaths: HatchPath[] = []; // Store the final 3D segments here
+
+      for (let i = 1; i <= numHatchLines; i++) {
+        const scanOffset = -radiusOnNearPlane + i * lineSpacing;
+        const masterLineCenterOnNearPlane = nearPlaneCenter.clone().addScaledVector(scanDirectionOnNearPlane, scanOffset);
+        const halfLength = Math.sqrt(Math.max(0, radiusOnNearPlane * radiusOnNearPlane - scanOffset * scanOffset));
+        if (halfLength < 0.001) continue;
+
+        const p1_near = masterLineCenterOnNearPlane.clone().addScaledVector(hatchLineDirectionOnNearPlane, -halfLength);
+        const p2_near = masterLineCenterOnNearPlane.clone().addScaledVector(hatchLineDirectionOnNearPlane, halfLength);
+
+        // Create the cutting plane using the light position and the near plane segment
+        const cuttingPlaneTriangle = new THREE.Triangle(lightPosition, p1_near, p2_near);
+        const cuttingPlane = new THREE.Plane();
+        cuttingPlaneTriangle.getPlane(cuttingPlane);
+
+        if (cuttingPlane.normal.lengthSq() < 0.1) {
+            console.warn("Degenerate cutting plane for spotlight hatch line.");
+            continue;
         }
 
-        const processTriangle = (vA_local: THREE.Vector3, vB_local: THREE.Vector3, vC_local: THREE.Vector3) => {
-          const vA_world = vA_local.clone().applyMatrix4(worldMatrix);
-          const vB_world = vB_local.clone().applyMatrix4(worldMatrix);
-          const vC_world = vC_local.clone().applyMatrix4(worldMatrix);
+        const segmentsForThisCuttingPlane: HatchLineSegment[] = [];
+
+        const processTriangleForSpotlight = (vA_local: THREE.Vector3, vB_local: THREE.Vector3, vC_local: THREE.Vector3, meshMatrixWorld: THREE.Matrix4) => {
+          const vA_world = vA_local.clone().applyMatrix4(meshMatrixWorld);
+          const vB_world = vB_local.clone().applyMatrix4(meshMatrixWorld);
+          const vC_world = vC_local.clone().applyMatrix4(meshMatrixWorld);
 
           const tri = new THREE.Triangle(vA_world, vB_world, vC_world);
           const triNormal = new THREE.Vector3();
           tri.getNormal(triNormal);
 
-          const rawDotNL = triNormal.dot(lightDirection);
-          if (rawDotNL > -0.001) {
+          const triCenter = new THREE.Vector3(); // For calculating angular attenuation
+          tri.getMidpoint(triCenter);
+          const vecToTriCenter = new THREE.Vector3().subVectors(triCenter, lightPosition);
+          const angleToTriCenterFromLightAxis = vecToTriCenter.angleTo(lightDirection);
+
+          // Quick reject if triangle's center is outside the cone entirely
+          if (angleToTriCenterFromLightAxis > spotAngleRad) {
             return;
           }
 
-          const dotNL = -rawDotNL;
+          const rawDotNL = triNormal.dot(lightDirection); // How much triangle faces the light source point
+          if (rawDotNL > -0.001) { // Back-face culling: if normal points towards or away from light along its direction.
+            return;
+          }
+          
+          const dotNL = -rawDotNL; // Should be positive for faces oriented towards the light direction
           let requiredFaceAlignment = 0.0;
-
-          if (i % 2 === 0) {
-            requiredFaceAlignment = 0.50;
+          // 'i' is the masterHatchLineIndex from the outer loop, controls pattern
+          if (i % 2 === 0) { 
+            requiredFaceAlignment = 0.50; // Denser/more lines for these master lines
           } else {
-            requiredFaceAlignment = 0.1;
+            requiredFaceAlignment = 0.1; // Sparser/less lines for these master lines
           }
 
-          if (dotNL < requiredFaceAlignment) {
+          // Attenuation factor based on how far from center of spotlight cone the triangle is
+          // Using cosine squared falloff: 1 at center (angle=0), ~0 at edge (angle=spotAngleRad if spotAngleRad is PI/2, but typically smaller)
+          // For typical spotAngleRad (e.g., < PI/2), cos(angle) will be > 0. Power enhances falloff.
+          const angularAttenuation = Math.pow(Math.cos(angleToTriCenterFromLightAxis), 2); // cos^2 falloff
+                                                                                       
+          // Effective strength of illumination on the triangle
+          const effectiveLightOnTriangle = dotNL * angularAttenuation;
+          
+          if (effectiveLightOnTriangle < requiredFaceAlignment) { 
             return;
           }
 
@@ -135,62 +305,111 @@ export function generateHatchLines(
 
           edges.forEach(edge => {
             const intersectPt = new THREE.Vector3();
-            if (hatchCuttingPlane.intersectLine(edge, intersectPt)) {
-              if (!intersectionPoints.some(p => p.distanceToSquared(intersectPt) < 0.000001)) {
-                intersectionPoints.push(intersectPt.clone());
-              }
+            // Intersect edge with the cuttingPlane (derived from light pos and near plane hatch segment)
+            if (cuttingPlane.intersectLine(edge, intersectPt)) {
+                // Basic check: is the intersection point within the spotlight cone?
+                const vecToIntersect = new THREE.Vector3().subVectors(intersectPt, lightPosition);
+                const angleToLightAxis = vecToIntersect.angleTo(lightDirection);
+                if (angleToLightAxis <= spotAngleRad) {
+                    // Further check: ensure point is beyond the near plane w.r.t light direction
+                    const projectedOntoLightDir = vecToIntersect.dot(lightDirection);
+                    if (projectedOntoLightDir >= nearDist - 0.001) { // Add small tolerance
+                        if (!intersectionPoints.some(p => p.distanceToSquared(intersectPt) < 0.000001)) {
+                            intersectionPoints.push(intersectPt.clone());
+                        }
+                    }
+                }
             }
           });
-          
+        
           if (intersectionPoints.length === 2) {
             const p1 = intersectionPoints[0];
             const p2 = intersectionPoints[1];
             if (p1.distanceToSquared(p2) > 0.00001) {
-              segmentsForThisMasterLine.push({
-                start: { x: p1.x, y: p1.y, z: p1.z },
-                end: { x: p2.x, y: p2.y, z: p2.z },
-              });
+                // Additional check: Ensure both points of the segment are truly within the cone
+                // (The individual point check above might pass points that form a segment partially outside)
+                const centerP1 = new THREE.Vector3().subVectors(p1, lightPosition);
+                const centerP2 = new THREE.Vector3().subVectors(p2, lightPosition);
+                if (centerP1.angleTo(lightDirection) <= spotAngleRad && centerP2.angleTo(lightDirection) <= spotAngleRad) {
+                    segmentsForThisCuttingPlane.push(
+                        { start: { x: p1.x, y: p1.y, z: p1.z }, end: { x: p2.x, y: p2.y, z: p2.z } }
+                    );
+                }
             }
           } else if (intersectionPoints.length > 2) {
-            // Handle coplanar case or multiple edge intersections by sorting along hatch direction
-             intersectionPoints.sort((a, b) => {
-              return a.dot(hatchLineDirectionOnPlane) - b.dot(hatchLineDirectionOnPlane);
+            // Sort points along the cutting plane's hatch direction (approximated)
+            // This part might need refinement for robust sorting of co-planar intersections
+            intersectionPoints.sort((a, b) => {
+                const dir = new THREE.Vector3().subVectors(p2_near, p1_near).normalize(); // Direction of the original hatch line on near plane
+                return a.dot(dir) - b.dot(dir);
             });
             const p_start = intersectionPoints[0];
             const p_end = intersectionPoints[intersectionPoints.length - 1];
             if (p_start.distanceToSquared(p_end) > 0.00001) {
-              segmentsForThisMasterLine.push({
-                start: { x: p_start.x, y: p_start.y, z: p_start.z },
-                end: { x: p_end.x, y: p_end.y, z: p_end.z },
-              });
+                 const centerStart = new THREE.Vector3().subVectors(p_start, lightPosition);
+                 const centerEnd = new THREE.Vector3().subVectors(p_end, lightPosition);
+                 if (centerStart.angleTo(lightDirection) <= spotAngleRad && centerEnd.angleTo(lightDirection) <= spotAngleRad) {
+                    segmentsForThisCuttingPlane.push(
+                        { start: { x: p_start.x, y: p_start.y, z: p_start.z }, end: { x: p_end.x, y: p_end.y, z: p_end.z } }
+                    );
+                 }
             }
           }
         };
 
-        const indices = geometry.index;
-        if (indices) {
-          for (let k = 0; k < indices.count; k += 3) {
-            processTriangle(vertices[indices.getX(k)], vertices[indices.getX(k + 1)], vertices[indices.getX(k + 2)]);
-          }
-        } else {
-          for (let k = 0; k < vertices.length; k += 3) {
-            processTriangle(vertices[k], vertices[k + 1], vertices[k + 2]);
-          }
-        }
-      });
+        objectMeshes.forEach(mesh => {
+          if (mesh.userData.isHelper) return;
+          
+          const geometry = mesh.geometry;
+          const positionAttribute = geometry.attributes.position;
+          const worldMatrix = mesh.matrixWorld;
 
-      // TODO: Join collinear and overlapping/adjacent segments from segmentsForThisMasterLine
-      // For now, each segment found for this master line becomes its own path.
-      segmentsForThisMasterLine.forEach(segment => {
-        allHatchPaths.push([segment]);
-      });
+          const localVertices: THREE.Vector3[] = [];
+          const tempVertex = new THREE.Vector3();
+          for (let j = 0; j < positionAttribute.count; j++) {
+            tempVertex.fromBufferAttribute(positionAttribute, j);
+            localVertices.push(tempVertex.clone());
+          }
+
+          const indices = geometry.index;
+          if (indices) {
+            for (let k = 0; k < indices.count; k += 3) {
+              processTriangleForSpotlight(localVertices[indices.getX(k)], localVertices[indices.getX(k + 1)], localVertices[indices.getX(k + 2)], worldMatrix);
+            }
+          } else {
+            for (let k = 0; k < localVertices.length; k += 3) {
+              processTriangleForSpotlight(localVertices[k], localVertices[k + 1], localVertices[k + 2], worldMatrix);
+            }
+          }
+        });
+
+        if (segmentsForThisCuttingPlane.length > 0) {
+          finalSpotlightPaths.push(...segmentsForThisCuttingPlane.map(seg => [seg]));
+        }
+      }
+
+      // TODO: Remaining steps:
+      // - Implement the mesh triangle intersection and clipping logic.
+      // - Consider intensity and falloff more deeply.
+      
+      if (finalSpotlightPaths.length > 0) {
+        allHatchPaths.push(...finalSpotlightPaths);
+      }
+      // console.warn(`Spotlight type for light '${light.id}' is partially implemented (near plane lines).`);
+      // Return finalSpotlightPaths once fully implemented
+      return finalSpotlightPaths; // Returning actual paths now
+    } else if (light.type === 'point') {
+      // TODO: Consider if point lights should also generate hatches (e.g. omni-directional hatching)
+      console.warn('Point light hatching not yet implemented.');
+    } else {
+      console.warn(`Unsupported light type: ${light.type}`);
     }
   });
 
   return allHatchPaths;
 }
 
-
+/*
 export function exportToSVG(hatchPaths: HatchPath[], camera: THREE.PerspectiveCamera | THREE.OrthographicCamera, sceneWidth: number, sceneHeight: number): string {
   let svgString = `<svg width="${sceneWidth}" height="${sceneHeight}" xmlns="http://www.w3.org/2000/svg" style="background-color: hsl(var(--background));">\\n`;
   svgString += `<g transform="translate(${sceneWidth / 2}, ${sceneHeight / 2}) scale(1, -1)">\\n`; 
@@ -245,7 +464,7 @@ export function exportToSVG(hatchPaths: HatchPath[], camera: THREE.PerspectiveCa
   svgString += `</g>\\n</svg>`;
   return svgString;
 }
-
+*/
 
 function projectToScreen(vector3: THREE.Vector3, projectionMatrix: THREE.Matrix4, width: number, height: number): { x: number, y: number } {
     const projected = vector3.clone().applyMatrix4(projectionMatrix);

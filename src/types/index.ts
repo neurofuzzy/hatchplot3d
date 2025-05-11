@@ -10,7 +10,7 @@ export interface Euler {
   z: number;
 }
 
-export type LightType = 'directional'; // Expandable to 'spotlight', 'pointlight'
+export type LightType = 'directional' | 'spotlight'; // Expandable to 'pointlight'
 
 export interface SceneLight {
   id: string;
@@ -20,6 +20,7 @@ export interface SceneLight {
   color: string; // Hex color string, e.g., "#ffffff"
   intensity: number; // Typically 0-1, could be higher. For hatching, maps to density.
   hatchAngle: number; // In degrees, 0-360
+  spotAngle?: number; // In degrees, for spotlight cone. Optional.
   castShadow: boolean; // Whether this light's hatching considers shadows
 }
 

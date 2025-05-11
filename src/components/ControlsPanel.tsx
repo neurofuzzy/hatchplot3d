@@ -11,7 +11,8 @@ import { Input } from '@/components/ui/input';
 import { Slider } from '@/components/ui/slider';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
-import { exportToSVG } from '@/lib/three-utils';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+// import { exportToSVG } from '@/lib/three-utils';
 import { Download, Lightbulb, Trash2, PlusCircle, RotateCcw, Sun, Cube, Target, Box, Sphere } from 'lucide-react';
 import type { SceneLight, Vector3, SceneObject } from '@/types';
 import { useToast } from '@/hooks/use-toast';
@@ -82,7 +83,19 @@ const ControlsPanel: React.FC = () => {
   };
 
   const handleLightChange = (id: string, field: keyof SceneLight, value: any) => {
-    updateLight(id, { [field]: value });
+    const currentLight = lights.find(l => l.id === id);
+    if (!currentLight) return;
+
+    let updatePayload: Partial<SceneLight> = { [field]: value };
+
+    if (field === 'type') {
+      if (value === 'spotlight' && currentLight.spotAngle === undefined) {
+        updatePayload.spotAngle = THREE.MathUtils.degToRad(30); // Default spot angle
+      }
+      // If switching away from spotlight, spotAngle will remain but won't be used.
+      // Alternatively, we could clear it: else if (value !== 'spotlight') { updatePayload.spotAngle = undefined; }
+    }
+    updateLight(id, updatePayload);
   };
 
   const handleLightPositionChange = (id: string, axis: keyof Vector3, value: number) => {
@@ -186,8 +199,9 @@ const ControlsPanel: React.FC = () => {
     if (!sceneElement) {
         toast({ title: "Export Error", description: "Scene element not found for dimensions. Using default 800x600.", variant: "destructive" });
         // Fallback dimensions if element not found
-        const svgData = exportToSVG(hatchLines, camera, 800, 600); // Default/fallback size
-        downloadSVG(svgData);
+        // const svgData = exportToSVG(hatchLines, camera, 800, 600); // Default/fallback size
+        // downloadSVG(svgData);
+        toast({ title: "SVG Export Disabled", description: "SVG export is temporarily disabled.", variant: "destructive" });
         return;
     }
     const sceneWidth = sceneElement.clientWidth;
@@ -200,9 +214,9 @@ const ControlsPanel: React.FC = () => {
     tempCamera.lookAt(new THREE.Vector3(camera.lookAt.x, camera.lookAt.y, camera.lookAt.z));
     tempCamera.updateProjectionMatrix(); 
     
-    const svgData = exportToSVG(hatchLines, tempCamera, sceneWidth, sceneHeight);
-    downloadSVG(svgData);
-    toast({ title: "SVG Exported", description: "Your scene has been exported as an SVG file." });
+    // const svgData = exportToSVG(hatchLines, tempCamera, sceneWidth, sceneHeight);
+    // downloadSVG(svgData);
+    toast({ title: "SVG Export Disabled", description: "SVG export is temporarily disabled.", variant: "destructive" });
   };
 
   const downloadSVG = (svgData: string) => {
@@ -258,17 +272,54 @@ const ControlsPanel: React.FC = () => {
                        <span className="text-xs text-muted-foreground">{light.intensity.toFixed(2)}</span>
                     </div>
 
-                    <div className="space-y-2">
-                      <Label htmlFor={`hatchAngle-${light.id}`}>Hatch Angle</Label>
-                       <Slider
-                        id={`hatchAngle-${light.id}`}
-                        min={0} max={360} step={1}
-                        value={[light.hatchAngle]}
-                        onValueChange={(value) => handleLightChange(light.id, 'hatchAngle', value[0])}
-                      />
-                      <span className="text-xs text-muted-foreground">{light.hatchAngle}°</span>
-                    </div>
-                    
+                    <div className="grid grid-cols-2 items-center gap-2 mt-2">
+                        <Label htmlFor={`light-hatchAngle-${light.id}`}>Hatch Angle</Label>
+                        <Input
+                          id={`light-hatchAngle-${light.id}`}
+                          type="number"
+                          value={light.hatchAngle}
+                          onChange={(e) => handleLightChange(light.id, 'hatchAngle', parseInt(e.target.value))}
+                          className="w-full"
+                        />
+                      </div>
+
+                      <div className="grid grid-cols-2 items-center gap-2 mt-2">
+                        <Label htmlFor={`light-type-${light.id}`}>Type</Label>
+                        <Select
+                          value={light.type}
+                          onValueChange={(newType: 'directional' | 'spotlight') => handleLightChange(light.id, 'type', newType)}
+                        >
+                          <SelectTrigger id={`light-type-${light.id}`}>
+                            <SelectValue placeholder="Select type" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="directional">Directional</SelectItem>
+                            <SelectItem value="spotlight">Spotlight</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+
+                      {light.type === 'spotlight' && (
+                        <div className="grid grid-cols-2 items-center gap-2 mt-2">
+                          <Label htmlFor={`light-spotAngle-${light.id}`}>Spot Angle (°)</Label>
+                          <Input
+                            id={`light-spotAngle-${light.id}`}
+                            type="number"
+                            value={light.spotAngle !== undefined ? THREE.MathUtils.radToDeg(light.spotAngle) : 30}
+                            onChange={(e) => {
+                              const angleDeg = parseFloat(e.target.value);
+                              if (!isNaN(angleDeg)) {
+                                handleLightChange(light.id, 'spotAngle', THREE.MathUtils.degToRad(angleDeg));
+                              }
+                            }}
+                            className="w-full"
+                            step="1"
+                            min="1"
+                            max="90" // Max practical spot angle
+                          />
+                        </div>
+                      )}
+
                     <Separator />
                     <Label className="font-semibold">Position:</Label>
                     {['x', 'y', 'z'].map(axis => (
