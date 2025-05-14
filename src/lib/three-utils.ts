@@ -562,6 +562,62 @@ export function createLightSources(lights: SceneLight[]): Array<{light: THREE.Li
 
         helper = new THREE.DirectionalLightHelper(dirLight, 0.5, helperColor); 
         break;
+      case 'spotlight':
+        const spotLight = new THREE.SpotLight(lightColor, lightData.intensity);
+        spotLight.position.set(lightData.position.x, lightData.position.y, lightData.position.z);
+        spotLight.target.position.set(lightData.target.x, lightData.target.y, lightData.target.z);
+        spotLight.angle = Math.PI / 4; // 45 degrees cone
+        spotLight.penumbra = 0.1;
+        spotLight.decay = 2;
+        light = spotLight;
+
+        // Mark the light target for selection and manipulation
+        spotLight.target.userData = {
+          id: `${lightData.id}-target`,
+          parentLightId: lightData.id,
+          isLightTarget: true,
+          isHelper: false
+        };
+
+        // Mark the light target for selection and manipulation
+        spotLight.target.userData = {
+          id: `${lightData.id}-target`,
+          parentLightId: lightData.id,
+          isLightTarget: true,
+          isHelper: false
+        };
+
+        // Create a visual representation of the target
+        const spotTargetMarker = new THREE.Mesh(
+          new THREE.SphereGeometry(0.1, 8, 8),
+          new THREE.MeshBasicMaterial({ 
+            color: lightColor,
+            transparent: true,
+            opacity: 0.5,
+            wireframe: true
+          })
+        );
+        spotTargetMarker.position.copy(spotLight.target.position);
+        spotTargetMarker.userData = { 
+          id: `${lightData.id}-target-visual`,
+          parentLightId: lightData.id,
+          isLightTarget: true,
+          isHelper: true
+        };
+        spotLight.target.add(spotTargetMarker);
+
+        let spotHelperColor = lightColor.clone().lerp(new THREE.Color(0xffffff), 0.5);
+        if (spotHelperColor.getHSL({h:0,s:0,l:0}).l < 0.2) spotHelperColor.setHex(0x808080);
+        if (spotHelperColor.getHSL({h:0,s:0,l:0}).l > 0.8) spotHelperColor.setHex(0x808080);
+
+        helper = new THREE.SpotLightHelper(spotLight, spotHelperColor);
+        helper.userData = {
+          id: `${lightData.id}-helper`,
+          parentLightId: lightData.id,
+          isLightHelper: true,
+          isHelper: true
+        };
+        break;
       default:
         const ambient = new THREE.AmbientLight(0xffffff, 0.1); 
         light = ambient;

@@ -295,7 +295,14 @@ const SceneViewer: React.FC = () => {
     const animate = () => {
       animationFrameIdRef.current = requestAnimationFrame(animate);
       controlsRef.current?.update();
-      lightHelpersRef.current.forEach(helper => helper.update());
+      lightHelpersRef.current.forEach(helper => {
+        if (helper instanceof THREE.SpotLightHelper) {
+          // Force update of spotlight helper's geometry
+          helper.update();
+        } else {
+          helper.update();
+        }
+      });
       rendererRef.current?.render(sceneRef.current!, cameraRef.current!);
     };
     animate();
@@ -641,7 +648,11 @@ const SceneViewer: React.FC = () => {
           // Check for intersections with light helpers first
           const helperIntersects = raycaster.intersectObjects(lightHelpers, true);
           if (helperIntersects.length > 0) {
-            const helper = helperIntersects[0].object;
+            let helper = helperIntersects[0].object;
+            // If we hit a SpotLightHelper's child (line segments), get the parent
+            if (helper.parent instanceof THREE.SpotLightHelper) {
+              helper = helper.parent;
+            }
             // Ensure helper.userData and parentLightId exist
             if (helper.userData && helper.userData.parentLightId) {
               const parentLightId = helper.userData.parentLightId as string;
