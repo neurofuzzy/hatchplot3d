@@ -163,7 +163,7 @@ function generateHatchLinesForDirectionalLight(
 export function generateHatchLines(
   objectMeshes: THREE.Mesh[],
   lights: SceneLight[],
-  _camera: THREE.PerspectiveCamera | THREE.OrthographicCamera
+  camera: THREE.PerspectiveCamera | THREE.OrthographicCamera
 ): HatchPath[] {
   const allHatchPaths: HatchPath[] = [];
 
@@ -236,7 +236,7 @@ export function generateHatchLines(
       });
 
       const spotlightHatchPaths: HatchPath[] = [];
-      const finalSpotlightPaths: HatchPath[] = []; // Store the final 3D segments here
+      const finalSpotlightPaths: HatchPath[] = [];
 
       for (let i = 1; i <= numHatchLines; i++) {
         const scanOffset = -radiusOnNearPlane + i * lineSpacing;
@@ -268,38 +268,29 @@ export function generateHatchLines(
           const triNormal = new THREE.Vector3();
           tri.getNormal(triNormal);
 
-          const triCenter = new THREE.Vector3(); // For calculating angular attenuation
+          const triCenter = new THREE.Vector3();
           tri.getMidpoint(triCenter);
           const vecToTriCenter = new THREE.Vector3().subVectors(triCenter, lightPosition);
           const angleToTriCenterFromLightAxis = vecToTriCenter.angleTo(lightDirection);
 
-          // Quick reject if triangle's center is outside the cone entirely
           if (angleToTriCenterFromLightAxis > spotAngleRad) {
             return;
           }
 
-          const rawDotNL = triNormal.dot(lightDirection); // How much triangle faces the light source point
-          if (rawDotNL > -0.001) { // Back-face culling: if normal points towards or away from light along its direction.
-            // Too noisy, only log if we're culling all triangles
-            // console.log('Triangle culled - facing away from light', { rawDotNL });
+          const rawDotNL = triNormal.dot(lightDirection);
+          if (rawDotNL > -0.001) {
             return;
           }
           
-          const dotNL = -rawDotNL; // Should be positive for faces oriented towards the light direction
+          const dotNL = -rawDotNL;
           let requiredFaceAlignment = 0.0;
-          // 'i' is the masterHatchLineIndex from the outer loop, controls pattern
           if (i % 2 === 0) { 
-            requiredFaceAlignment = 0.3; // Denser/more lines for these master lines
+            requiredFaceAlignment = 0.3;
           } else {
-            requiredFaceAlignment = 0.1; // Sparser/less lines for these master lines
+            requiredFaceAlignment = 0.1;
           }
 
-          // Attenuation factor based on how far from center of spotlight cone the triangle is
-          // Using cosine squared falloff: 1 at center (angle=0), ~0 at edge (angle=spotAngleRad if spotAngleRad is PI/2, but typically smaller)
-          // For typical spotAngleRad (e.g., < PI/2), cos(angle) will be > 0. Power enhances falloff.
-          const angularAttenuation = Math.pow(Math.cos(angleToTriCenterFromLightAxis), 2); // cos^2 falloff
-                                                                                       
-          // Effective strength of illumination on the triangle
+          const angularAttenuation = Math.pow(Math.cos(angleToTriCenterFromLightAxis), 2);
           const effectiveLightOnTriangle = dotNL * angularAttenuation;
           
           if (effectiveLightOnTriangle < requiredFaceAlignment) { 
@@ -315,15 +306,12 @@ export function generateHatchLines(
 
           edges.forEach(edge => {
             const intersectPt = new THREE.Vector3();
-            // Intersect edge with the cuttingPlane (derived from light pos and near plane hatch segment)
             if (cuttingPlane.intersectLine(edge, intersectPt)) {
-                // Basic check: is the intersection point within the spotlight cone?
                 const vecToIntersect = new THREE.Vector3().subVectors(intersectPt, lightPosition);
                 const angleToLightAxis = vecToIntersect.angleTo(lightDirection);
                 if (angleToLightAxis <= spotAngleRad) {
-                    // Further check: ensure point is beyond the near plane w.r.t light direction
                     const projectedOntoLightDir = vecToIntersect.dot(lightDirection);
-                    if (projectedOntoLightDir >= nearDist - 0.001) { // Add small tolerance
+                    if (projectedOntoLightDir >= nearDist - 0.001) {
                         if (!intersectionPoints.some(p => p.distanceToSquared(intersectPt) < 0.000001)) {
                             intersectionPoints.push(intersectPt.clone());
                         }
@@ -336,8 +324,6 @@ export function generateHatchLines(
             const p1 = intersectionPoints[0];
             const p2 = intersectionPoints[1];
             if (p1.distanceToSquared(p2) > 0.00001) {
-                // Additional check: Ensure both points of the segment are truly within the cone
-                // (The individual point check above might pass points that form a segment partially outside)
                 const centerP1 = new THREE.Vector3().subVectors(p1, lightPosition);
                 const centerP2 = new THREE.Vector3().subVectors(p2, lightPosition);
                 if (centerP1.angleTo(lightDirection) <= spotAngleRad && centerP2.angleTo(lightDirection) <= spotAngleRad) {
@@ -347,10 +333,8 @@ export function generateHatchLines(
                 }
             }
           } else if (intersectionPoints.length > 2) {
-            // Sort points along the cutting plane's hatch direction (approximated)
-            // This part might need refinement for robust sorting of co-planar intersections
             intersectionPoints.sort((a, b) => {
-                const dir = new THREE.Vector3().subVectors(p2_near, p1_near).normalize(); // Direction of the original hatch line on near plane
+                const dir = new THREE.Vector3().subVectors(p2_near, p1_near).normalize();
                 return a.dot(dir) - b.dot(dir);
             });
             const p_start = intersectionPoints[0];
@@ -397,10 +381,6 @@ export function generateHatchLines(
           finalSpotlightPaths.push(...segmentsForThisCuttingPlane.map(seg => [seg]));
         }
       }
-
-      // TODO: Remaining steps:
-      // - Implement the mesh triangle intersection and clipping logic.
-      // - Consider intensity and falloff more deeply.
       
       if (finalSpotlightPaths.length === 0) {
         console.warn('No spotlight paths generated. Light params:', {
@@ -414,28 +394,18 @@ export function generateHatchLines(
         console.log('Generated spotlight paths:', finalSpotlightPaths.length);
         allHatchPaths.push(...finalSpotlightPaths);
       }
-    } else if (light.type === 'point') {
-      // TODO: Consider if point lights should also generate hatches (e.g. omni-directional hatching)
-      console.warn('Point light hatching not yet implemented.');
-    } else {
-      console.warn(`Unsupported light type: ${light.type}`);
     }
   });
 
   return allHatchPaths;
 }
 
-/*
-export function exportToSVG(hatchPaths: HatchPath[], camera: THREE.PerspectiveCamera | THREE.OrthographicCamera, sceneWidth: number, sceneHeight: number): string {
-  let svgString = `<svg width="${sceneWidth}" height="${sceneHeight}" xmlns="http://www.w3.org/2000/svg" style="background-color: hsl(var(--background));">\\n`;
-  svgString += `<g transform="translate(${sceneWidth / 2}, ${sceneHeight / 2}) scale(1, -1)">\\n`; 
-
+export function exportToSVG(hatchPaths: HatchPath[], camera: THREE.PerspectiveCamera, width: number, height: number): string {
   camera.updateMatrixWorld();
   camera.updateProjectionMatrix();
 
-  const projectionMatrix = new THREE.Matrix4().multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
-
-  let strokeColor = "hsl(0, 0%, 98%)"; 
+  // Get foreground color from CSS variable if available
+  let strokeColor = "hsl(0, 0%, 98%)";
   if (typeof window !== 'undefined') {
     try {
       const fgCssValue = getComputedStyle(document.documentElement).getPropertyValue('--foreground').trim();
@@ -445,10 +415,10 @@ export function exportToSVG(hatchPaths: HatchPath[], camera: THREE.PerspectiveCa
       } else {
         const testColor = new THREE.Color();
         try {
-            testColor.set(fgCssValue);
-            strokeColor = fgCssValue; 
+          testColor.set(fgCssValue);
+          strokeColor = fgCssValue;
         } catch (e) {
-            console.warn("Failed to parse --foreground for SVG export (not HSL or recognized format), defaulting.", e);
+          console.warn("Failed to parse --foreground for SVG export (not HSL or recognized format), defaulting.", e);
         }
       }
     } catch (e) {
@@ -456,31 +426,70 @@ export function exportToSVG(hatchPaths: HatchPath[], camera: THREE.PerspectiveCa
     }
   }
 
+  // First pass: compute bounds of all projected points
+  let minX = Infinity, minY = Infinity;
+  let maxX = -Infinity, maxY = -Infinity;
+  const projMatrix = camera.projectionMatrix.clone().multiply(camera.matrixWorldInverse);
 
   hatchPaths.forEach(path => {
-    if (path.length > 0) {
-      const points: string[] = [];
-      path.forEach((segment, segmentIndex) => {
-        const start3D = new THREE.Vector3(segment.start.x, segment.start.y, segment.start.z);
-        const end3D = new THREE.Vector3(segment.end.x, segment.end.y, segment.end.z);
+    path.forEach(segment => {
+      const start3D = new THREE.Vector3(segment.start.x, segment.start.y, segment.start.z);
+      const end3D = new THREE.Vector3(segment.end.x, segment.end.y, segment.end.z);
 
-        const start2D = projectToScreen(start3D, projectionMatrix, sceneWidth, sceneHeight);
-        const end2D = projectToScreen(end3D, projectionMatrix, sceneWidth, sceneHeight);
+      const start2D = projectToScreen(start3D, projMatrix, width, height);
+      const end2D = projectToScreen(end3D, projMatrix, width, height);
 
-        if (segmentIndex === 0) {
-            points.push(`${start2D.x.toFixed(2)},${start2D.y.toFixed(2)}`);
-        }
-        points.push(`${end2D.x.toFixed(2)},${end2D.y.toFixed(2)}`);
-      });
-
-      svgString += `  <polyline points="${points.join(' ')}" stroke="${strokeColor}" stroke-width="0.5" fill="none" />\\n`;
-    }
+      minX = Math.min(minX, start2D.x, end2D.x);
+      minY = Math.min(minY, start2D.y, end2D.y);
+      maxX = Math.max(maxX, start2D.x, end2D.x);
+      maxY = Math.max(maxY, start2D.y, end2D.y);
+    });
   });
 
-  svgString += `</g>\\n</svg>`;
-  return svgString;
+  // Calculate translation to center the scene
+  const sceneWidth = maxX - minX;
+  const sceneHeight = maxY - minY;
+  const translateX = (width - sceneWidth) / 2 - minX;
+  const translateY = (height - sceneHeight) / 2 - minY;
+
+  // Convert paths to SVG polylines with centering translation
+  const pathElements = hatchPaths.map(path => {
+    if (path.length === 0) return '';
+    
+    const points: string[] = [];
+    path.forEach((segment, segmentIndex) => {
+      const start3D = new THREE.Vector3(segment.start.x, segment.start.y, segment.start.z);
+      const end3D = new THREE.Vector3(segment.end.x, segment.end.y, segment.end.z);
+
+      const start2D = projectToScreen(start3D, projMatrix, width, height);
+      const end2D = projectToScreen(end3D, projMatrix, width, height);
+
+      // Apply centering translation
+      start2D.x += translateX;
+      start2D.y += translateY;
+      end2D.x += translateX;
+      end2D.y += translateY;
+
+      if (segmentIndex === 0) {
+        points.push(`${start2D.x.toFixed(2)},${start2D.y.toFixed(2)}`);
+      }
+      points.push(`${end2D.x.toFixed(2)},${end2D.y.toFixed(2)}`);
+    });
+
+    return `<polyline points="${points.join(' ')}" stroke="${strokeColor}" stroke-width="0.5" fill="none" />`;
+  }).filter(Boolean);
+
+  // Generate final SVG
+  const svg = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
+  <g transform="matrix(1,0,0,-1,0,${height})">
+    ${pathElements.join('\n    ')}
+  </g>
+</svg>`;
+
+  return svg;
 }
-*/
 
 function projectToScreen(vector3: THREE.Vector3, projectionMatrix: THREE.Matrix4, width: number, height: number): { x: number, y: number } {
     const projected = vector3.clone().applyMatrix4(projectionMatrix);

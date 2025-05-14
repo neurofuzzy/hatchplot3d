@@ -12,7 +12,7 @@ import { Slider } from '@/components/ui/slider';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-// import { exportToSVG } from '@/lib/three-utils';
+import { exportToSVG } from '@/lib/three-utils';
 import { Download, Lightbulb, Trash2, PlusCircle, RotateCcw, Sun, Cube, Target, Box, Sphere } from 'lucide-react';
 import type { SceneLight, Vector3, SceneObject } from '@/types';
 import { useToast } from '@/hooks/use-toast';
@@ -214,9 +214,9 @@ const ControlsPanel: React.FC = () => {
     tempCamera.lookAt(new THREE.Vector3(camera.lookAt.x, camera.lookAt.y, camera.lookAt.z));
     tempCamera.updateProjectionMatrix(); 
     
-    // const svgData = exportToSVG(hatchLines, tempCamera, sceneWidth, sceneHeight);
-    // downloadSVG(svgData);
-    toast({ title: "SVG Export Disabled", description: "SVG export is temporarily disabled.", variant: "destructive" });
+    const svgData = exportToSVG(hatchLines, tempCamera, sceneWidth, sceneHeight);
+    downloadSVG(svgData);
+    toast({ title: "SVG Exported", description: "Scene has been exported to SVG successfully." });
   };
 
   const downloadSVG = (svgData: string) => {
