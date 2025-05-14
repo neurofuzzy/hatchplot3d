@@ -196,7 +196,7 @@ export function generateHatchLines(
       allHatchPaths.push(...directionalPaths);
     } else if (light.type === 'spotlight') {
       console.log('Processing spotlight:', light.id);
-      const spotAngleRad = THREE.MathUtils.degToRad(light.spotAngle || 60); // Default to 60 degrees if not set
+      const spotAngleRad = light.spotAngle ? THREE.MathUtils.degToRad(light.spotAngle) : Math.PI / 3; // Default to 60 degrees if not set
       const nearDist = 1.0; // Increased near plane distance for better hatch line distribution
 
       const nearPlaneCenter = lightPosition.clone().addScaledVector(lightDirection, nearDist);
@@ -225,7 +225,7 @@ export function generateHatchLines(
       }
       
       const radiusOnNearPlane = nearDist * Math.tan(spotAngleRad);
-      const numHatchLines = Math.max(5, Math.floor(light.intensity * 20)); // Base number of lines on intensity, not radius
+      const numHatchLines = Math.max(20, Math.floor(light.intensity * 80)); // Increased density for spotlights
       const lineSpacing = (2 * radiusOnNearPlane) / (numHatchLines + 1);
       console.log('Spotlight params:', {
         spotAngleRad: spotAngleRad * 180 / Math.PI,
@@ -582,9 +582,8 @@ export function createLightSources(lights: SceneLight[]): Array<{light: THREE.Li
         const spotLight = new THREE.SpotLight(lightColor);
         spotLight.position.set(lightData.position.x, lightData.position.y, lightData.position.z);
         spotLight.target.position.set(lightData.target.x, lightData.target.y, lightData.target.z);
-        // Convert spotAngle from degrees to radians, default to 60 degrees if not set
-        const spotAngleDegrees = lightData.spotAngle || 60;
-        spotLight.angle = THREE.MathUtils.degToRad(spotAngleDegrees);
+        // Use the angle directly - it will be converted in updateLightProperties
+        spotLight.angle = Math.PI / 3; // Default 60 degrees
         spotLight.penumbra = 0.3; // Softer edges
         spotLight.decay = 1.5; // Moderate falloff
         spotLight.intensity = lightData.intensity; // Use original intensity

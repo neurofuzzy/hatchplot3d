@@ -305,11 +305,11 @@ const ControlsPanel: React.FC = () => {
                           <Input
                             id={`light-spotAngle-${light.id}`}
                             type="number"
-                            value={light.spotAngle !== undefined ? THREE.MathUtils.radToDeg(light.spotAngle) : 30}
+                            value={light.spotAngle || 60}
                             onChange={(e) => {
                               const angleDeg = parseFloat(e.target.value);
                               if (!isNaN(angleDeg)) {
-                                handleLightChange(light.id, 'spotAngle', THREE.MathUtils.degToRad(angleDeg));
+                                handleLightChange(light.id, 'spotAngle', angleDeg);
                               }
                             }}
                             className="w-full"

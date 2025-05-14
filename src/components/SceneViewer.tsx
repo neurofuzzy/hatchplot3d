@@ -451,7 +451,10 @@ const SceneViewer: React.FC = () => {
         spotLight.target.position.set(sceneLight.target.x, sceneLight.target.y, sceneLight.target.z);
         spotLight.target.updateMatrixWorld();
       }
-      spotLight.angle = THREE.MathUtils.degToRad(sceneLight.spotAngle || 60);
+      // Convert from degrees to radians, default to 60 degrees
+      const spotAngleDegrees = sceneLight.spotAngle || 60;
+      console.log('Setting spotlight angle:', { degrees: spotAngleDegrees, radians: THREE.MathUtils.degToRad(spotAngleDegrees) });
+      spotLight.angle = THREE.MathUtils.degToRad(spotAngleDegrees);
     } else if ((threeLight as any).isDirectionalLight && sceneLight.type === 'directional') {
       const directionalLight = threeLight as unknown as THREE.DirectionalLight;
       if (sceneLight.target) {
