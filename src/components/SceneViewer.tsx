@@ -354,17 +354,24 @@ const SceneViewer: React.FC = () => {
       // Dispose lights and their helpers
       lightHelpersRef.current.forEach((helper, id) => {
         if (sceneRef.current) {
-          sceneRef.current.remove(helper);
-          const lightSource = sceneRef.current.getObjectByProperty('userData.id', id) as THREE.Light;
+          // Remove helper
+          if (helper.parent === sceneRef.current) {
+            sceneRef.current.remove(helper);
+          }
+          helper.dispose();
+
+          // Find and remove light by name (more reliable than userData)
+          const lightSource = sceneRef.current.getObjectByName(id) as THREE.Light;
           if (lightSource) {
-            sceneRef.current.remove(lightSource);
+            if (lightSource.parent === sceneRef.current) {
+              sceneRef.current.remove(lightSource);
+            }
+            // Remove target if it exists
             if (lightSource.target && lightSource.target.parent === sceneRef.current) {
               sceneRef.current.remove(lightSource.target);
             }
-            // THREE.Light itself does not have a dispose method.
           }
         }
-        helper.dispose();
       });
       lightHelpersRef.current.clear();
 
@@ -501,16 +508,22 @@ const SceneViewer: React.FC = () => {
           }
 
           if (!threeLight) {
-            const newLights = createLightSources([sceneLight], sceneRef.current!);
+            const newLights = createLightSources([sceneLight]);
             if (newLights.length > 0) {
               threeLight = newLights[0].light;
               helper = newLights[0].helper;
+              // Ensure proper ID tracking
+              threeLight.name = sceneLight.id;
+              threeLight.userData.id = sceneLight.id;
+              threeLight.userData.type = sceneLight.type;
               sceneRef.current!.add(threeLight);
               if (helper) {
+                helper.userData.id = `${sceneLight.id}-helper`;
                 sceneRef.current!.add(helper);
                 lightHelpersRef.current.set(sceneLight.id, helper);
               }
               if (threeLight.isSpotLight && (threeLight as THREE.SpotLight).target.parent !== sceneRef.current) {
+                (threeLight as THREE.SpotLight).target.name = `${sceneLight.id}-target`;
                 sceneRef.current!.add((threeLight as THREE.SpotLight).target);
               }
             }
