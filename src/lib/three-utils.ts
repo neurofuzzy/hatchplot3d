@@ -4,7 +4,8 @@ function generateHatchLinesForDirectionalLight(
   light: SceneLight,
   lightDirection: THREE.Vector3,
   objectMeshes: THREE.Mesh[],
-  sceneBoundingBox: THREE.Box3
+  sceneBoundingBox: THREE.Box3,
+  camera: THREE.PerspectiveCamera | THREE.OrthographicCamera
 ): HatchPath[] {
   const generatedPaths: HatchPath[] = [];
 
@@ -83,8 +84,18 @@ function generateHatchLinesForDirectionalLight(
         const triNormal = new THREE.Vector3();
         tri.getNormal(triNormal);
 
+        // Check if face is visible from camera
+        const triCenter = new THREE.Vector3();
+        tri.getMidpoint(triCenter);
+        const vecToCam = new THREE.Vector3().subVectors(camera.position, triCenter);
+        const dotNC = triNormal.dot(vecToCam);
+        if (dotNC < 0.001) { // Face is facing away from camera
+          return;
+        }
+
+        // Check if face is facing the light
         const rawDotNL = triNormal.dot(lightDirection);
-        if (rawDotNL > -0.001) {
+        if (rawDotNL > -0.001) { // Face is facing away from light
           return;
         }
 
@@ -191,7 +202,8 @@ export function generateHatchLines(
         light,
         lightDirection,
         objectMeshes,
-        sceneBoundingBox
+        sceneBoundingBox,
+        camera
       );
       allHatchPaths.push(...directionalPaths);
     } else if (light.type === 'spotlight') {
@@ -270,15 +282,24 @@ export function generateHatchLines(
 
           const triCenter = new THREE.Vector3();
           tri.getMidpoint(triCenter);
+
+          // Check if face is visible from camera
+          const vecToCam = new THREE.Vector3().subVectors(camera.position, triCenter);
+          const dotNC = triNormal.dot(vecToCam);
+          if (dotNC < 0.001) { // Face is facing away from camera
+            return;
+          }
+
+          // Check if face is within spotlight cone
           const vecToTriCenter = new THREE.Vector3().subVectors(triCenter, lightPosition);
           const angleToTriCenterFromLightAxis = vecToTriCenter.angleTo(lightDirection);
-
           if (angleToTriCenterFromLightAxis > spotAngleRad) {
             return;
           }
 
+          // Check if face is facing the light
           const rawDotNL = triNormal.dot(lightDirection);
-          if (rawDotNL > -0.001) {
+          if (rawDotNL > -0.001) { // Face is facing away from light
             return;
           }
           
