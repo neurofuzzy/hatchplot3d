@@ -451,7 +451,7 @@ const SceneViewer: React.FC = () => {
         spotLight.target.position.set(sceneLight.target.x, sceneLight.target.y, sceneLight.target.z);
         spotLight.target.updateMatrixWorld();
       }
-      spotLight.angle = sceneLight.spotAngle ?? spotLight.angle;
+      spotLight.angle = THREE.MathUtils.degToRad(sceneLight.spotAngle || 60);
     } else if ((threeLight as any).isDirectionalLight && sceneLight.type === 'directional') {
       const directionalLight = threeLight as unknown as THREE.DirectionalLight;
       if (sceneLight.target) {

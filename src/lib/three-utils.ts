@@ -195,8 +195,9 @@ export function generateHatchLines(
       );
       allHatchPaths.push(...directionalPaths);
     } else if (light.type === 'spotlight') {
-      const spotAngleRad = THREE.MathUtils.degToRad(light.spotAngle || 45); // Default to 45 degrees if not set
-      const nearDist = 0.1; // Define a near plane distance
+      console.log('Processing spotlight:', light.id);
+      const spotAngleRad = THREE.MathUtils.degToRad(light.spotAngle || 60); // Default to 60 degrees if not set
+      const nearDist = 1.0; // Increased near plane distance for better hatch line distribution
 
       const nearPlaneCenter = lightPosition.clone().addScaledVector(lightDirection, nearDist);
       const spotlightNearPlane = new THREE.Plane().setFromNormalAndCoplanarPoint(lightDirection, nearPlaneCenter);
@@ -224,8 +225,15 @@ export function generateHatchLines(
       }
       
       const radiusOnNearPlane = nearDist * Math.tan(spotAngleRad);
-      const numHatchLines = Math.max(1, Math.floor(light.intensity * radiusOnNearPlane * 2 * 10)); // Density factor, similar to directional
+      const numHatchLines = Math.max(5, Math.floor(light.intensity * 20)); // Base number of lines on intensity, not radius
       const lineSpacing = (2 * radiusOnNearPlane) / (numHatchLines + 1);
+      console.log('Spotlight params:', {
+        spotAngleRad: spotAngleRad * 180 / Math.PI,
+        intensity: light.intensity,
+        radiusOnNearPlane,
+        numHatchLines,
+        lineSpacing
+      });
 
       const spotlightHatchPaths: HatchPath[] = [];
       const finalSpotlightPaths: HatchPath[] = []; // Store the final 3D segments here
@@ -272,6 +280,8 @@ export function generateHatchLines(
 
           const rawDotNL = triNormal.dot(lightDirection); // How much triangle faces the light source point
           if (rawDotNL > -0.001) { // Back-face culling: if normal points towards or away from light along its direction.
+            // Too noisy, only log if we're culling all triangles
+            // console.log('Triangle culled - facing away from light', { rawDotNL });
             return;
           }
           
@@ -279,7 +289,7 @@ export function generateHatchLines(
           let requiredFaceAlignment = 0.0;
           // 'i' is the masterHatchLineIndex from the outer loop, controls pattern
           if (i % 2 === 0) { 
-            requiredFaceAlignment = 0.50; // Denser/more lines for these master lines
+            requiredFaceAlignment = 0.3; // Denser/more lines for these master lines
           } else {
             requiredFaceAlignment = 0.1; // Sparser/less lines for these master lines
           }
@@ -392,12 +402,18 @@ export function generateHatchLines(
       // - Implement the mesh triangle intersection and clipping logic.
       // - Consider intensity and falloff more deeply.
       
-      if (finalSpotlightPaths.length > 0) {
+      if (finalSpotlightPaths.length === 0) {
+        console.warn('No spotlight paths generated. Light params:', {
+          position: lightPosition,
+          target: lightTarget,
+          direction: lightDirection,
+          angle: spotAngleRad * 180 / Math.PI,
+          intensity: light.intensity
+        });
+      } else {
+        console.log('Generated spotlight paths:', finalSpotlightPaths.length);
         allHatchPaths.push(...finalSpotlightPaths);
       }
-      // console.warn(`Spotlight type for light '${light.id}' is partially implemented (near plane lines).`);
-      // Return finalSpotlightPaths once fully implemented
-      return finalSpotlightPaths; // Returning actual paths now
     } else if (light.type === 'point') {
       // TODO: Consider if point lights should also generate hatches (e.g. omni-directional hatching)
       console.warn('Point light hatching not yet implemented.');
@@ -563,12 +579,22 @@ export function createLightSources(lights: SceneLight[]): Array<{light: THREE.Li
         helper = new THREE.DirectionalLightHelper(dirLight, 0.5, helperColor); 
         break;
       case 'spotlight':
-        const spotLight = new THREE.SpotLight(lightColor, lightData.intensity);
+        const spotLight = new THREE.SpotLight(lightColor);
         spotLight.position.set(lightData.position.x, lightData.position.y, lightData.position.z);
         spotLight.target.position.set(lightData.target.x, lightData.target.y, lightData.target.z);
-        spotLight.angle = Math.PI / 4; // 45 degrees cone
-        spotLight.penumbra = 0.1;
-        spotLight.decay = 2;
+        // Convert spotAngle from degrees to radians, default to 60 degrees if not set
+        const spotAngleDegrees = lightData.spotAngle || 60;
+        spotLight.angle = THREE.MathUtils.degToRad(spotAngleDegrees);
+        spotLight.penumbra = 0.3; // Softer edges
+        spotLight.decay = 1.5; // Moderate falloff
+        spotLight.intensity = lightData.intensity; // Use original intensity
+        spotLight.distance = 0; // No max distance
+        console.log('Created spotlight:', {
+          position: spotLight.position,
+          target: spotLight.target.position,
+          angle: spotLight.angle * 180 / Math.PI,
+          intensity: spotLight.intensity
+        });
         light = spotLight;
 
         // Mark the light target for selection and manipulation
@@ -586,25 +612,6 @@ export function createLightSources(lights: SceneLight[]): Array<{light: THREE.Li
           isLightTarget: true,
           isHelper: false
         };
-
-        // Create a visual representation of the target
-        const spotTargetMarker = new THREE.Mesh(
-          new THREE.SphereGeometry(0.1, 8, 8),
-          new THREE.MeshBasicMaterial({ 
-            color: lightColor,
-            transparent: true,
-            opacity: 0.5,
-            wireframe: true
-          })
-        );
-        spotTargetMarker.position.copy(spotLight.target.position);
-        spotTargetMarker.userData = { 
-          id: `${lightData.id}-target-visual`,
-          parentLightId: lightData.id,
-          isLightTarget: true,
-          isHelper: true
-        };
-        spotLight.target.add(spotTargetMarker);
 
         let spotHelperColor = lightColor.clone().lerp(new THREE.Color(0xffffff), 0.5);
         if (spotHelperColor.getHSL({h:0,s:0,l:0}).l < 0.2) spotHelperColor.setHex(0x808080);

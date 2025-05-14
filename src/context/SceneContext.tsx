@@ -57,7 +57,8 @@ export const SceneProvider: React.FC<{ children: ReactNode }> = ({ children }) =
       target: { x: 0.5, y: 0, z: 0 }, // Light target towards objects
       color: '#ffffff',
       intensity: 0.9, 
-      hatchAngle: 45, 
+      hatchAngle: 45,
+      spotAngle: 60, // Default spotlight angle in degrees
       castShadow: true, // This flag is more for conceptual lighting, not directly for SVG
     };
     return {
